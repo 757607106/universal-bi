@@ -77,13 +77,45 @@
             </div>
             
             <div v-else>
-              <!-- Error Message -->
-              <div v-if="msg.error" class="text-red-500 flex items-center gap-2">
-                <el-icon><Warning /></el-icon> {{ msg.content }}
+              <!-- Error Message (仅显示真正的系统错误) -->
+              <div v-if="msg.error && msg.isSystemError" class="flex items-start gap-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                <el-icon class="text-red-500 text-xl mt-0.5 flex-shrink-0">
+                  <Warning />
+                </el-icon>
+                <div class="flex-1">
+                  <p class="text-sm font-medium text-red-800 dark:text-red-400 mb-1">系统错误</p>
+                  <p class="text-sm text-red-700 dark:text-red-300">{{ msg.content }}</p>
+                </div>
               </div>
 
               <!-- Normal Content -->
               <div v-else class="space-y-4">
+                <!-- Clarification Request -->
+                <div v-if="msg.chartType === 'clarification'" class="space-y-3">
+                  <!-- 纯文本消息，自然风格 -->
+                  <div class="text-sm text-gray-900 dark:text-gray-100 whitespace-pre-wrap leading-relaxed">
+                    {{ msg.content }}
+                  </div>
+                  
+                  <!-- Quick Reply Suggestions -->
+                  <div v-if="getClarificationSuggestions(msg.content || '').length > 0" class="space-y-2">
+                    <p class="text-xs text-gray-500 dark:text-gray-400 font-medium">✨ 快捷回复：</p>
+                    <div class="flex flex-wrap gap-2">
+                      <el-tag
+                        v-for="(suggestion, idx) in getClarificationSuggestions(msg.content || '')"
+                        :key="idx"
+                        type="info"
+                        effect="plain"
+                        size="default"
+                        class="cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/40 hover:border-blue-400 dark:hover:border-blue-600 transition-all duration-200 hover:shadow-md"
+                        @click="handleQuickReply(suggestion)"
+                      >
+                        {{ suggestion }}
+                      </el-tag>
+                    </div>
+                  </div>
+                </div>
+                
                 <!-- Thinking Steps (Real) -->
                 <div v-if="msg.steps && msg.steps.length > 0" class="mb-4">
                   <el-collapse class="thinking-steps-collapse">
@@ -119,14 +151,14 @@
                   </el-collapse>
                 </div>
 
-                <p v-if="msg.content" class="whitespace-pre-wrap">{{ msg.content }}</p>
+                <p v-if="msg.content && msg.chartType !== 'clarification'" class="whitespace-pre-wrap">{{ msg.content }}</p>
                 
                 <!-- Chart -->
-                <div v-if="msg.chartData" class="space-y-2">
+                <div v-if="msg.chartData && msg.chartData.columns && msg.chartData.rows" class="space-y-2">
                   <div class="h-80 w-full bg-gray-50 dark:bg-gray-900 rounded-lg p-2 border border-gray-100 dark:border-gray-800">
                      <DynamicChart
                        :chart-type="msg.chartType || 'table'"
-                       :data="msg.chartData"
+                       :data="{ columns: msg.chartData.columns, rows: msg.chartData.rows }"
                      />
                   </div>
                   <!-- Save to Dashboard Button -->
@@ -240,7 +272,8 @@ import {
   Clock,
   Operation,
   CircleCheck,
-  WarningFilled
+  WarningFilled,
+  QuestionFilled
 } from '@element-plus/icons-vue'
 import { getDatasetList, type Dataset } from '@/api/dataset'
 import { sendChat } from '@/api/chat'
@@ -251,13 +284,14 @@ interface Message {
   type: 'user' | 'ai'
   content?: string
   sql?: string
-  chartData?: { columns: string[]; rows: any[] }
+  chartData?: { columns: string[] | null; rows: any[] | null }  // 允许 columns 和 rows 为 null
   chartType?: string
   loading?: boolean
   error?: boolean
   question?: string  // 保存用户问题
   datasetId?: number  // 保存数据集ID
   steps?: string[]  // 执行步骤
+  isSystemError?: boolean  // 区分系统错误和业务澄清
 }
 
 const currentDatasetId = ref<number | undefined>(undefined)
@@ -368,23 +402,34 @@ const handleSend = async () => {
     })
 
     // 4. Update AI Message (保存问题和数据集ID)
+    // 区分澄清对话和真正的错误
+    const isClarification = res.chart_type === 'clarification'
+    
     messages.value[aiMsgIndex] = {
       type: 'ai',
       loading: false,
-      content: res.answer_text,
-      sql: res.sql,
-      chartData: res.data,
+      content: res.answer_text || undefined,
+      sql: res.sql || undefined,
+      chartData: res.data || undefined,
       chartType: res.chart_type,
       question: question,  // 保存原始问题
       datasetId: currentDatasetId.value,  // 保存数据集ID
-      steps: res.steps  // 保存执行步骤
+      steps: res.steps,  // 保存执行步骤
+      error: false,  // 澄清对话不是错误
+      isSystemError: false
     }
   } catch (error: any) {
     console.error(error)
+    
+    // 区分 HTTP 错误类型
+    const statusCode = error.response?.status
+    const isServerError = statusCode && statusCode >= 500
+    
     messages.value[aiMsgIndex] = {
       type: 'ai',
       loading: false,
       error: true,
+      isSystemError: isServerError,
       content: error.response?.data?.detail || '抱歉，处理您的问题时出现了错误。请稍后重试。'
     }
   } finally {
@@ -398,8 +443,11 @@ const handleSend = async () => {
 const getStepsSummary = (steps: string[]) => {
   const hasError = steps.some(s => s.includes('失败') || s.includes('出错'))
   const hasCorrection = steps.some(s => s.includes('修正') || s.includes('自动修复'))
+  const hasMultiRound = steps.some(s => s.includes('多轮推理') || s.includes('中间 SQL'))
   
-  if (hasCorrection) {
+  if (hasMultiRound) {
+    return 'AI 进行了多轮推理 🧠'
+  } else if (hasCorrection) {
     return 'AI 已自动修正 SQL 并生成结果 ✨'
   } else if (hasError) {
     return '查看执行详情 (含警告)'
@@ -514,6 +562,123 @@ const handleCancelSave = () => {
   showNewDashboardInput.value = false
   newDashboardName.value = ''
   currentSavingMessage.value = null
+}
+
+// Clarification Helpers
+const getClarificationSuggestions = (content: string): string[] => {
+  if (!content) return []
+  
+  // 尝试从 AI 回复中提取建议
+  const suggestions: string[] = []
+  
+  // 1. 检测是否包含"还是"分隔的选项（最优先，直接来自AI的建议）
+  if (content.includes('还是')) {
+    const parts = content.split('还是')
+    for (const part of parts) {
+      // 提取""或「」包裹的内容
+      const quotedMatch = part.match(/["「](.*?)["」]/)
+      if (quotedMatch && quotedMatch[1] && quotedMatch[1].length < 30) {
+        suggestions.push(quotedMatch[1].trim())
+        continue
+      }
+      
+      // 提取常见的业务术语
+      const termMatch = part.match(/(个数|总数|金额|数量|订单|客户|用户|消费|销售|按.{1,4}分组|按.{1,4}统计)/)
+      if (termMatch && termMatch[1] && termMatch[1].length < 20) {
+        suggestions.push(termMatch[1].trim())
+      }
+    }
+  }
+  
+  // 2. 检测是否包含"或"分隔的选项
+  if (content.includes('或')) {
+    const parts = content.split('或')
+    for (const part of parts) {
+      const quotedMatch = part.match(/["「](.*?)["」]/)
+      if (quotedMatch && quotedMatch[1] && quotedMatch[1].length < 30) {
+        suggestions.push(quotedMatch[1].trim())
+      }
+    }
+  }
+  
+  // 3. 检测是否包含列表式的选项（如："1. 选项A  2. 选项B"）
+  const listMatches = content.match(/[\d一二三四五][\.、]\s*([^\d一二三四五\.、\n]{2,20})/g)
+  if (listMatches) {
+    for (const match of listMatches) {
+      const cleanMatch = match.replace(/^[\d一二三四五][\.、]\s*/, '').trim()
+      if (cleanMatch.length >= 2 && cleanMatch.length <= 20) {
+        suggestions.push(cleanMatch)
+      }
+    }
+  }
+  
+  // 4. 根据关键词提供智能建议
+  const contentLower = content.toLowerCase()
+  
+  // 时间相关
+  if (contentLower.includes('时间') || contentLower.includes('日期') || contentLower.includes('周期') || contentLower.includes('范围')) {
+    if (suggestions.length < 3) {
+      suggestions.push('最近 7 天', '最近 30 天', '本月')
+    }
+  }
+  
+  // 统计维度相关
+  if (contentLower.includes('分组') || contentLower.includes('统计') || contentLower.includes('维度')) {
+    if (suggestions.length < 3) {
+      suggestions.push('按日统计', '按月统计', '按类型分组')
+    }
+  }
+  
+  // 客户相关
+  if (contentLower.includes('客户') || contentLower.includes('用户')) {
+    if (suggestions.length < 3) {
+      suggestions.push('VIP 客户', '普通客户', '所有客户')
+    }
+  }
+  
+  // 订单相关
+  if (contentLower.includes('订单')) {
+    if (suggestions.length < 3) {
+      suggestions.push('已完成订单', '待处理订单', '所有订单')
+    }
+  }
+  
+  // 5. 如果仍然没有提取到建议，返回通用默认建议
+  if (suggestions.length === 0) {
+    return [
+      '显示最近 30 天的数据',
+      '按月统计',
+      '查询所有类型'
+    ]
+  }
+  
+  // 去重并限制数量
+  return [...new Set(suggestions)].slice(0, 5)
+}
+
+const handleQuickReply = (suggestion: string) => {
+  if (!currentDatasetId.value) {
+    ElMessage.warning('请先选择一个数据集')
+    return
+  }
+  
+  // 获取上一个用户问题
+  const lastUserMessage = messages.value.filter(m => m.type === 'user').pop()
+  if (!lastUserMessage) return
+  
+  // 组合原始问题和建议
+  const enhancedQuestion = `${lastUserMessage.content}，${suggestion}`
+  
+  // 自动填充到输入框
+  inputMessage.value = enhancedQuestion
+  
+  // 聚焦到输入框
+  nextTick(() => {
+    const inputEl = document.querySelector('.el-input__inner') as HTMLInputElement
+    if (inputEl) {
+      inputEl.focus()
+    }
+  })
 }
 </script>
 

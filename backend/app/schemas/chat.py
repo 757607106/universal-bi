@@ -6,8 +6,10 @@ class ChatRequest(BaseModel):
     question: str
 
 class ChatResponse(BaseModel):
-    sql: str
-    columns: List[str]
-    rows: List[Dict[str, Any]]
+    sql: Optional[str] = None
+    columns: Optional[List[str]] = None
+    rows: Optional[List[Dict[str, Any]]] = None
     chart_type: str
     summary: Optional[str] = None
+    answer_text: Optional[str] = None  # For clarification requests
+    steps: Optional[List[str]] = None  # Execution steps tracking

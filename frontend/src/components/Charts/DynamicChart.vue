@@ -1,7 +1,29 @@
 <template>
   <div class="w-full h-full min-h-[400px]">
+    <!-- Empty State for Clarification or No Data -->
+    <div 
+      v-if="chartType === 'clarification' || !data || !data.columns || data.columns.length === 0 || !data.rows || data.rows.length === 0"
+      class="h-full flex flex-col items-center justify-center text-gray-400 dark:text-gray-500 space-y-4 p-8"
+    >
+      <el-icon class="text-7xl opacity-40">
+        <QuestionFilled v-if="chartType === 'clarification'" />
+        <DataAnalysis v-else />
+      </el-icon>
+      <div class="text-center space-y-3 max-w-md">
+        <p class="text-lg font-semibold text-gray-600 dark:text-gray-400">
+          {{ chartType === 'clarification' ? '💡 需要更多信息' : '⚠️ 暂无数据' }}
+        </p>
+        <p class="text-sm text-gray-500 dark:text-gray-500 leading-relaxed">
+          {{ chartType === 'clarification' 
+             ? 'AI 需要更多信息才能生成图表，请根据上方问题提供更多细节' 
+             : '查询执行成功，但没有找到符合条件的数据。请尝试调整查询条件或扩大范围' 
+          }}
+        </p>
+      </div>
+    </div>
+
     <!-- Table View -->
-    <div v-if="chartType === 'table'" class="h-full overflow-auto">
+    <div v-else-if="chartType === 'table'" class="h-full overflow-auto">
       <el-table :data="data.rows" border stripe style="width: 100%" height="100%">
         <el-table-column
           v-for="col in data.columns"
@@ -36,6 +58,7 @@ import {
   TitleComponent,
   DataZoomComponent
 } from 'echarts/components'
+import { QuestionFilled, DataAnalysis } from '@element-plus/icons-vue'
 import VChart from 'vue-echarts'
 
 // Register ECharts components
@@ -62,7 +85,14 @@ interface Props {
 const props = defineProps<Props>()
 
 const chartOption = computed(() => {
-  if (props.chartType === 'table' || !props.data.columns.length) return {}
+  // 防御性检查:确保数据存在且不为空
+  if (props.chartType === 'table' || 
+      !props.data.columns || 
+      props.data.columns.length === 0 || 
+      !props.data.rows || 
+      props.data.rows.length === 0) {
+    return {}
+  }
 
   const xAxisCol = props.data.columns[0]
   const yAxisCol = props.data.columns[1]

@@ -10,27 +10,27 @@ const apiClient = axios.create({
 })
 
 export interface ChatResponse {
-  answer_text: string
-  sql: string
+  answer_text?: string  // For clarification requests
+  sql: string | null
   data: {
-    columns: string[]
-    rows: any[]
-  }
+    columns: string[] | null
+    rows: any[] | null
+  } | null
   chart_type: string
-  steps?: string[]  // 执行步骤记录
+  steps?: string[]  // Execution steps tracking
 }
 
 export const sendChat = async (data: { dataset_id: number, question: string }) => {
   const response = await apiClient.post<any>('/chat/', data)
   // Adapt flat backend response to nested frontend interface
   return {
-    answer_text: response.data.summary,
+    answer_text: response.data.answer_text || response.data.summary,  // Handle clarification
     sql: response.data.sql,
-    data: {
+    data: response.data.columns && response.data.rows ? {
       columns: response.data.columns,
       rows: response.data.rows
-    },
+    } : null,
     chart_type: response.data.chart_type,
-    steps: response.data.steps || []  // 包含执行步骤
+    steps: response.data.steps || []  // Include execution steps
   } as ChatResponse
 }
