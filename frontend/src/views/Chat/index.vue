@@ -153,8 +153,19 @@
 
                 <p v-if="msg.content && msg.chartType !== 'clarification'" class="whitespace-pre-wrap">{{ msg.content }}</p>
                 
+                <!-- 结果摘要（仅显示单数据结果） -->
+                <div v-if="msg.chartData && msg.chartData.rows && msg.chartData.rows.length === 1 && msg.chartType !== 'clarification'" class="my-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                  <div class="flex items-center gap-2 mb-2">
+                    <el-icon class="text-blue-500"><CircleCheck /></el-icon>
+                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">查询结果</span>
+                  </div>
+                  <div class="text-2xl font-bold text-gray-900 dark:text-gray-100">
+                    {{ formatSingleResult(msg.chartData) }}
+                  </div>
+                </div>
+                
                 <!-- Chart -->
-                <div v-if="msg.chartData && msg.chartData.columns && msg.chartData.rows" class="space-y-2">
+                <div v-if="msg.chartData && msg.chartData.columns && msg.chartData.rows && msg.chartData.rows.length > 0" class="space-y-2">
                   <div class="h-80 w-full bg-gray-50 dark:bg-gray-900 rounded-lg p-2 border border-gray-100 dark:border-gray-800">
                      <DynamicChart
                        :chart-type="msg.chartType || 'table'"
@@ -178,6 +189,29 @@
                   <el-collapse-item title="查看生成的 SQL" name="1">
                     <div class="bg-gray-900 text-gray-300 p-3 rounded-md font-mono text-xs overflow-x-auto">
                       {{ msg.sql }}
+                    </div>
+                    
+                    <!-- Feedback Buttons -->
+                    <div class="flex items-center gap-3 mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+                      <span class="text-xs text-gray-500 dark:text-gray-400">这个结果有帮助吗？</span>
+                      <el-button
+                        size="small"
+                        :type="msg.feedbackGiven === 'like' ? 'success' : 'default'"
+                        :disabled="msg.feedbackGiven !== undefined"
+                        @click="handleLikeFeedback(msg, index)"
+                      >
+                        <el-icon class="mr-1"><Select /></el-icon>
+                        {{ msg.feedbackGiven === 'like' ? '已喜欢' : '喜欢' }}
+                      </el-button>
+                      <el-button
+                        size="small"
+                        :type="msg.feedbackGiven === 'dislike' ? 'danger' : 'default'"
+                        :disabled="msg.feedbackGiven !== undefined"
+                        @click="handleDislikeFeedback(msg, index)"
+                      >
+                        <el-icon class="mr-1"><CloseBold /></el-icon>
+                        {{ msg.feedbackGiven === 'dislike' ? '已反馈' : '不满意' }}
+                      </el-button>
                     </div>
                   </el-collapse-item>
                 </el-collapse>
@@ -253,6 +287,41 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- SQL Correction Dialog -->
+    <el-dialog
+      v-model="sqlCorrectionDialog"
+      title="修正 SQL"
+      width="700px"
+    >
+      <div class="space-y-4">
+        <div>
+          <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">请修改下方的 SQL 查询，然后提交给 AI 学习：</p>
+          <el-input
+            v-model="correctedSql"
+            type="textarea"
+            :rows="10"
+            placeholder="输入正确的 SQL..."
+            class="font-mono text-sm"
+          />
+        </div>
+        <el-alert
+          title="提示"
+          type="info"
+          :closable="false"
+          show-icon
+        >
+          AI 会学习你提供的正确 SQL，下次遇到类似问题时会更准确。
+        </el-alert>
+      </div>
+      
+      <template #footer>
+        <el-button @click="handleCancelCorrection">取消</el-button>
+        <el-button type="primary" @click="handleSubmitCorrection" :loading="submittingFeedback">
+          提交修正
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -273,10 +342,12 @@ import {
   Operation,
   CircleCheck,
   WarningFilled,
-  QuestionFilled
+  QuestionFilled,
+  Select,
+  CloseBold
 } from '@element-plus/icons-vue'
 import { getDatasetList, type Dataset } from '@/api/dataset'
-import { sendChat } from '@/api/chat'
+import { sendChat, submitFeedback } from '@/api/chat'
 import { getDashboards, createDashboard, addCardToDashboard, type Dashboard } from '@/api/dashboard'
 import DynamicChart from '@/components/Charts/DynamicChart.vue'
 
@@ -292,6 +363,7 @@ interface Message {
   datasetId?: number  // 保存数据集ID
   steps?: string[]  // 执行步骤
   isSystemError?: boolean  // 区分系统错误和业务澄清
+  feedbackGiven?: 'like' | 'dislike'  // 反馈状态
 }
 
 const currentDatasetId = ref<number | undefined>(undefined)
@@ -322,6 +394,13 @@ const showNewDashboardInput = ref(false)
 const newDashboardName = ref('')
 const savingCard = ref(false)
 const currentSavingMessage = ref<Message | null>(null)
+
+// Feedback Dialog State
+const sqlCorrectionDialog = ref(false)
+const correctedSql = ref('')
+const submittingFeedback = ref(false)
+const currentFeedbackMessage = ref<Message | null>(null)
+const currentFeedbackMessageIndex = ref<number>(-1)
 
 onMounted(async () => {
   loadingDatasets.value = true
@@ -402,20 +481,34 @@ const handleSend = async () => {
     })
 
     // 4. Update AI Message (保存问题和数据集ID)
-    // 区分澄清对话和真正的错误
     const isClarification = res.chart_type === 'clarification'
+    
+    // 直接使用后端返回的 columns 和 rows
+    const chartData = (res.columns && res.rows) ? {
+      columns: res.columns,
+      rows: res.rows
+    } : undefined
+    
+    // Debug: 输出数据结构
+    console.log('[Chat Debug] API Response:', {
+      has_columns: !!res.columns,
+      has_rows: !!res.rows,
+      rows_length: res.rows?.length,
+      chartData: chartData,
+      chart_type: res.chart_type
+    })
     
     messages.value[aiMsgIndex] = {
       type: 'ai',
       loading: false,
       content: res.answer_text || undefined,
       sql: res.sql || undefined,
-      chartData: res.data || undefined,
+      chartData: chartData,
       chartType: res.chart_type,
-      question: question,  // 保存原始问题
-      datasetId: currentDatasetId.value,  // 保存数据集ID
-      steps: res.steps,  // 保存执行步骤
-      error: false,  // 澄清对话不是错误
+      question: question,
+      datasetId: currentDatasetId.value,
+      steps: res.steps,
+      error: false,
       isSystemError: false
     }
   } catch (error: any) {
@@ -679,6 +772,122 @@ const handleQuickReply = (suggestion: string) => {
       inputEl.focus()
     }
   })
+}
+
+// Format single result for better display
+const formatSingleResult = (chartData: { columns: string[] | null; rows: any[] | null }) => {
+  if (!chartData.rows || chartData.rows.length !== 1 || !chartData.columns) {
+    return ''
+  }
+  
+  const row = chartData.rows[0]
+  const parts: string[] = []
+  
+  chartData.columns.forEach((col, index) => {
+    const value = row[col]
+    
+    // 格式化数值
+    if (typeof value === 'number') {
+      if (Number.isInteger(value)) {
+        parts.push(`${col}: ${value.toLocaleString()}`)
+      } else {
+        parts.push(`${col}: ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+      }
+    } else {
+      parts.push(`${col}: ${value}`)
+    }
+  })
+  
+  return parts.join(' | ')
+}
+
+// Feedback Handlers
+const handleLikeFeedback = async (msg: Message, index: number) => {
+  if (!msg.sql || !msg.question || !msg.datasetId) {
+    ElMessage.warning('无法提交反馈，缺少必要信息')
+    return
+  }
+  
+  submittingFeedback.value = true
+  
+  try {
+    const response = await submitFeedback({
+      dataset_id: msg.datasetId,
+      question: msg.question,
+      sql: msg.sql,
+      rating: 1
+    })
+    
+    if (response.success) {
+      ElMessage.success(response.message)
+      // 标记为已反馈
+      messages.value[index].feedbackGiven = 'like'
+    } else {
+      ElMessage.warning(response.message)
+    }
+  } catch (error: any) {
+    console.error(error)
+    ElMessage.error('反馈提交失败')
+  } finally {
+    submittingFeedback.value = false
+  }
+}
+
+const handleDislikeFeedback = (msg: Message, index: number) => {
+  if (!msg.sql || !msg.question || !msg.datasetId) {
+    ElMessage.warning('无法提交反馈，缺少必要信息')
+    return
+  }
+  
+  // 打开 SQL 修正对话框
+  currentFeedbackMessage.value = msg
+  currentFeedbackMessageIndex.value = index
+  correctedSql.value = msg.sql  // 预填充当前 SQL
+  sqlCorrectionDialog.value = true
+}
+
+const handleCancelCorrection = () => {
+  sqlCorrectionDialog.value = false
+  correctedSql.value = ''
+  currentFeedbackMessage.value = null
+  currentFeedbackMessageIndex.value = -1
+}
+
+const handleSubmitCorrection = async () => {
+  if (!currentFeedbackMessage.value || currentFeedbackMessageIndex.value === -1) {
+    return
+  }
+  
+  if (!correctedSql.value.trim()) {
+    ElMessage.warning('请输入修正后的 SQL')
+    return
+  }
+  
+  submittingFeedback.value = true
+  
+  try {
+    const response = await submitFeedback({
+      dataset_id: currentFeedbackMessage.value.datasetId!,
+      question: currentFeedbackMessage.value.question!,
+      sql: correctedSql.value.trim(),
+      rating: -1
+    })
+    
+    if (response.success) {
+      ElMessage.success(response.message)
+      // 标记为已反馈
+      messages.value[currentFeedbackMessageIndex.value].feedbackGiven = 'dislike'
+      // 关闭对话框
+      handleCancelCorrection()
+    } else {
+      ElMessage.warning(response.message)
+    }
+  } catch (error: any) {
+    console.error(error)
+    ElMessage.error('修正提交失败')
+  } finally {
+    submittingFeedback.value = false
+  }
 }
 </script>
 

@@ -11,3 +11,4 @@ openai
 chromadb
 faker
 pandas
+redis>=5.0.0

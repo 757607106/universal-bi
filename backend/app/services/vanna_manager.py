@@ -10,7 +10,11 @@ import re
 import asyncio
 import pandas as pd
 import uuid
+import json
+import hashlib
 from openai import OpenAI as OpenAIClient
+import redis
+from redis.exceptions import RedisError
 
 # Vanna 2.0 Imports
 from vanna.core import Agent, ToolRegistry, ToolContext
@@ -89,6 +93,95 @@ class SimpleUserResolver(UserResolver):
         return User(id="admin", email="admin@example.com", group_memberships=['admin'])
 
 class VannaManager:
+    # Class-level Redis client for connection reuse
+    _redis_client = None
+    _redis_available = False
+    
+    @classmethod
+    def _get_redis_client(cls):
+        """
+        Get or initialize Redis client with connection pooling.
+        Returns None if Redis is unavailable (graceful degradation).
+        """
+        if cls._redis_client is None:
+            try:
+                cls._redis_client = redis.from_url(
+                    settings.REDIS_URL,
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                # Test connection
+                cls._redis_client.ping()
+                cls._redis_available = True
+                logger.info(f"Redis connected successfully: {settings.REDIS_URL}")
+            except RedisError as e:
+                logger.warning(f"Redis connection failed: {e}. Cache disabled.")
+                cls._redis_client = None
+                cls._redis_available = False
+            except Exception as e:
+                logger.warning(f"Unexpected error connecting to Redis: {e}. Cache disabled.")
+                cls._redis_client = None
+                cls._redis_available = False
+        
+        return cls._redis_client if cls._redis_available else None
+    
+    @staticmethod
+    def _generate_cache_key(dataset_id: int, question: str) -> str:
+        """
+        Generate cache key for a query.
+        Format: bi:cache:{dataset_id}:{hash(question)}
+        """
+        question_hash = hashlib.md5(question.encode('utf-8')).hexdigest()
+        return f"bi:cache:{dataset_id}:{question_hash}"
+    
+    @staticmethod
+    def _serialize_cache_data(result: dict) -> str:
+        """
+        Serialize result data to JSON string for Redis storage.
+        """
+        return json.dumps(result, ensure_ascii=False)
+    
+    @staticmethod
+    def _deserialize_cache_data(data: str) -> dict:
+        """
+        Deserialize JSON string from Redis to result dict.
+        """
+        return json.loads(data)
+    
+    @classmethod
+    def clear_cache(cls, dataset_id: int) -> int:
+        """
+        Clear all cached queries for a specific dataset.
+        Useful when dataset is retrained or terms are updated.
+        
+        Args:
+            dataset_id: Dataset ID to clear cache for
+            
+        Returns:
+            int: Number of keys deleted, -1 if Redis unavailable
+        """
+        redis_client = cls._get_redis_client()
+        if not redis_client:
+            logger.warning("Redis unavailable, cannot clear cache")
+            return -1
+        
+        try:
+            # Find all keys matching the pattern
+            pattern = f"bi:cache:{dataset_id}:*"
+            keys = redis_client.keys(pattern)
+            
+            if keys:
+                deleted = redis_client.delete(*keys)
+                logger.info(f"Cleared {deleted} cached queries for dataset {dataset_id}")
+                return deleted
+            else:
+                logger.info(f"No cached queries found for dataset {dataset_id}")
+                return 0
+        except RedisError as e:
+            logger.error(f"Failed to clear cache for dataset {dataset_id}: {e}")
+            return -1
+    
     @staticmethod
     def get_legacy_vanna(dataset_id: int):
         """
@@ -219,6 +312,11 @@ class VannaManager:
             db_session.commit()
             logger.info(f"Training completed for dataset {dataset_id}")
             
+            # Clear cache after training dataset
+            cleared = VannaManager.clear_cache(dataset_id)
+            if cleared >= 0:
+                logger.info(f"Cleared {cleared} cached queries after training dataset {dataset_id}")
+            
         except Exception as e:
             logger.error(f"Training failed for dataset {dataset_id}: {e}")
             dataset.training_status = "failed"
@@ -229,6 +327,7 @@ class VannaManager:
         """
         Train a business term by adding it to Vanna's documentation memory.
         Uses Legacy API for consistency with existing training approach.
+        Clears cache after training to ensure fresh results.
         """
         try:
             # Get Legacy Vanna instance
@@ -240,23 +339,95 @@ class VannaManager:
             
             logger.info(f"Successfully trained business term '{term}' for dataset {dataset_id}")
             
+            # Clear cache after training new term
+            cleared = VannaManager.clear_cache(dataset_id)
+            if cleared >= 0:
+                logger.info(f"Cleared {cleared} cached queries after training term '{term}'")
+            
         except Exception as e:
             logger.error(f"Failed to train business term '{term}': {e}")
-            raise ValueError(f"训练业务术语失败: {str(e)}")
+            raise ValueError(f"训练问答对失败: {str(e)}")
+    
+    @staticmethod
+    def train_qa(dataset_id: int, question: str, sql: str, db_session: Session):
+        """
+        Train a successful question-SQL pair from user feedback.
+        This helps AI learn from correct examples and improve future responses.
+        
+        Args:
+            dataset_id: Dataset ID
+            question: User's question
+            sql: Correct SQL for the question
+            db_session: Database session
+        
+        Raises:
+            ValueError: If training fails
+        """
+        try:
+            # Get Legacy Vanna instance
+            vn = VannaManager.get_legacy_vanna(dataset_id)
+            
+            # Train the Q-SQL pair
+            vn.train(question=question, sql=sql)
+            
+            logger.info(f"Successfully trained Q-A pair for dataset {dataset_id}: '{question[:50]}...'")
+            
+            # Clear cache after training to ensure fresh results
+            cleared = VannaManager.clear_cache(dataset_id)
+            if cleared >= 0:
+                logger.info(f"Cleared {cleared} cached queries after training Q-A pair")
+            
+        except Exception as e:
+            logger.error(f"Failed to train Q-A pair for dataset {dataset_id}: {e}")
+            raise ValueError(f"训练问答对失败: {str(e)}")
 
     @staticmethod
-    async def generate_result(dataset_id: int, question: str, db_session: Session):
+    async def generate_result(dataset_id: int, question: str, db_session: Session, allow_cache: bool = True):
         """
         Generate SQL and execute it with intelligent multi-round dialogue (Auto-Reflection Loop).
+        Now with Redis-based query caching for improved performance.
         
         Features:
-        1. LLM-driven intermediate SQL detection and execution
-        2. Intelligent clarification generation when ambiguous
-        3. Graceful text-only responses (no exceptions for non-SQL)
-        4. LLM-powered friendly error messages on failures
-        5. All responses in Chinese
+        1. Redis-based query caching with configurable TTL
+        2. LLM-driven intermediate SQL detection and execution
+        3. Intelligent clarification generation when ambiguous
+        4. Graceful text-only responses (no exceptions for non-SQL)
+        5. LLM-powered friendly error messages on failures
+        6. All responses in Chinese
+        
+        Args:
+            dataset_id: Dataset ID
+            question: User's question
+            db_session: Database session
+            allow_cache: Whether to use cache (default: True)
+            
+        Returns:
+            dict: Result with sql, columns, rows, chart_type, etc.
+                  Includes 'from_cache' flag when result is from cache
         """
         execution_steps = []
+        
+        # === Step 0: Cache Check ===
+        if allow_cache:
+            redis_client = VannaManager._get_redis_client()
+            cache_key = VannaManager._generate_cache_key(dataset_id, question)
+            
+            if redis_client:
+                try:
+                    cached_data = redis_client.get(cache_key)
+                    if cached_data:
+                        logger.info(f"Cache hit for dataset {dataset_id}, question: {question[:50]}...")
+                        result = VannaManager._deserialize_cache_data(cached_data)
+                        result['from_cache'] = True
+                        # 不要累加 steps，直接替换为缓存标记
+                        result['steps'] = ["从缓存返回结果"]
+                        return result
+                    else:
+                        logger.debug(f"Cache miss for dataset {dataset_id}")
+                        execution_steps.append("缓存未命中")
+                except RedisError as e:
+                    logger.warning(f"Cache read failed: {e}. Proceeding without cache.")
+                    execution_steps.append(f"缓存读取失败: {str(e)[:50]}")
         
         try:
             # === Step A: Initial Setup ===
@@ -409,14 +580,36 @@ class VannaManager:
                     # Serialize data
                     cleaned_rows = VannaManager._serialize_dataframe(df)
                     
-                    return {
+                    # Prepare result
+                    result = {
                         "sql": cleaned_sql,
                         "columns": df.columns.tolist(),
                         "rows": cleaned_rows,
                         "chart_type": chart_type,
                         "summary": None,
-                        "steps": execution_steps
+                        "steps": execution_steps,
+                        "from_cache": False
                     }
+                    
+                    # === Step D: Write to Cache ===
+                    if allow_cache:
+                        redis_client = VannaManager._get_redis_client()
+                        if redis_client:
+                            try:
+                                cache_key = VannaManager._generate_cache_key(dataset_id, question)
+                                cache_data = VannaManager._serialize_cache_data(result)
+                                redis_client.setex(
+                                    cache_key,
+                                    settings.REDIS_CACHE_TTL,
+                                    cache_data
+                                )
+                                logger.info(f"Result cached for dataset {dataset_id}, TTL: {settings.REDIS_CACHE_TTL}s")
+                                execution_steps.append(f"结果已缓存 (TTL: {settings.REDIS_CACHE_TTL}s)")
+                            except RedisError as e:
+                                logger.warning(f"Cache write failed: {e}. Result returned without caching.")
+                                execution_steps.append(f"缓存写入失败: {str(e)[:50]}")
+                    
+                    return result
                     
                 except Exception as e:
                     error_msg = str(e)

@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     DASHSCOPE_API_KEY: str = ""
     QWEN_MODEL: str = "qwen-max"
     
+    # Redis Config
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_CACHE_TTL: int = 300  # 5 minutes default
+    
     # Vector DB Config (PGVector)
     # Defaults to using the same DB as main app if not specified, but usually separate for Vanna
     VN_PG_HOST: str = "localhost"

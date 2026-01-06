@@ -13,3 +13,14 @@ class ChatResponse(BaseModel):
     summary: Optional[str] = None
     answer_text: Optional[str] = None  # For clarification requests
     steps: Optional[List[str]] = None  # Execution steps tracking
+    from_cache: Optional[bool] = False  # Whether result is from cache
+
+class FeedbackRequest(BaseModel):
+    dataset_id: int
+    question: str
+    sql: str
+    rating: int  # 1 for like, -1 for dislike
+
+class FeedbackResponse(BaseModel):
+    success: bool
+    message: str
