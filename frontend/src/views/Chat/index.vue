@@ -1,14 +1,18 @@
 <template>
-  <div class="h-full flex flex-col bg-gray-50 dark:bg-gray-950">
+  <div class="h-full flex flex-col bg-transparent relative">
     <!-- Header / Toolbar -->
-    <div class="h-16 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-6 flex items-center justify-between flex-shrink-0">
+    <div class="h-16 border-b border-gray-200 dark:border-slate-700/50 bg-white/50 dark:bg-transparent px-6 flex items-center justify-between flex-shrink-0 z-10 transition-colors">
       <div class="flex items-center gap-4">
-        <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">智能问答</h2>
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-slate-100 flex items-center gap-2 transition-colors">
+          <el-icon class="text-blue-600 dark:text-cyan-500"><ChatDotRound /></el-icon>
+          ChatBI
+        </h2>
         <el-select
           v-model="currentDatasetId"
           placeholder="请选择数据集"
           class="w-64"
           :loading="loadingDatasets"
+          :effect="'light'"
         >
           <el-option
             v-for="item in datasets"
@@ -18,33 +22,57 @@
           />
         </el-select>
       </div>
-      <el-button @click="clearMessages" plain size="small">
+      <el-button @click="clearMessages" plain size="small" class="!bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-700 !text-gray-600 dark:!text-slate-300 hover:!bg-gray-100 dark:hover:!bg-slate-700 !rounded-lg transition-colors">
         <el-icon class="mr-1"><Delete /></el-icon> 清空对话
       </el-button>
     </div>
 
     <!-- Chat Area -->
-    <div class="flex-1 overflow-y-auto p-6 space-y-6" ref="chatContainer">
+    <div class="flex-1 overflow-y-auto p-6 space-y-8 scroll-smooth" ref="chatContainer">
       <!-- Empty State -->
-      <div v-if="messages.length === 0" class="h-full flex flex-col items-center justify-center text-gray-400">
-        <el-icon class="text-6xl mb-4 text-gray-300 dark:text-gray-700"><ChatDotRound /></el-icon>
-        <p class="text-lg mb-2">选择一个数据集，开始探索数据</p>
-        <p class="text-sm">试着问： "上个月的销售额是多少？" 或 "按产品类别统计销量"</p>
+      <div v-if="messages.length === 0" class="h-full flex flex-col items-center justify-center">
+        <div class="text-center mb-10">
+          <div class="w-20 h-20 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-2xl mx-auto flex items-center justify-center mb-6 shadow-lg shadow-blue-500/20">
+            <el-icon class="text-4xl text-white"><DataAnalysis /></el-icon>
+          </div>
+          <h1 class="text-3xl font-bold text-gray-900 dark:text-slate-100 mb-3 transition-colors">ChatBI 智能分析助手</h1>
+          <p class="text-gray-500 dark:text-slate-400 max-w-md mx-auto transition-colors">选择下方推荐指令或直接输入问题，开始探索您的数据价值。</p>
+        </div>
+        
+        <!-- Recommendation Cards -->
+        <div class="grid grid-cols-2 gap-4 w-full max-w-3xl">
+          <div 
+            v-for="(card, index) in recommendCards" 
+            :key="index"
+            @click="handleCardClick(card)"
+            class="group p-5 border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800/40 rounded-xl cursor-pointer transition-all duration-300 hover:shadow-lg hover:shadow-blue-500/10 dark:hover:shadow-[0_0_20px_rgba(6,182,212,0.15)] hover:border-blue-400 dark:hover:border-cyan-500/50 hover:-translate-y-1"
+          >
+            <div class="flex items-start gap-4">
+              <div class="p-3 rounded-lg bg-gray-100 dark:bg-slate-700/50 group-hover:bg-blue-50 dark:group-hover:bg-cyan-500/20 group-hover:text-blue-500 dark:group-hover:text-cyan-400 text-gray-400 dark:text-slate-400 transition-colors">
+                <component :is="card.icon" class="w-6 h-6" />
+              </div>
+              <div>
+                <h3 class="font-medium text-gray-900 dark:text-slate-200 mb-1 group-hover:text-blue-600 dark:group-hover:text-cyan-400 transition-colors">{{ card.title }}</h3>
+                <p class="text-xs text-gray-500 dark:text-slate-500 leading-relaxed">{{ card.desc }}</p>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Messages -->
       <div
         v-for="(msg, index) in messages"
         :key="index"
-        :class="['flex gap-4 max-w-5xl mx-auto', msg.type === 'user' ? 'flex-row-reverse' : '']"
+        :class="['flex gap-5 max-w-5xl mx-auto', msg.type === 'user' ? 'flex-row-reverse' : '']"
       >
         <!-- Avatar -->
         <div
-          class="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
-          :class="msg.type === 'user' ? 'bg-blue-500 text-white' : 'bg-green-500 text-white'"
+          class="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 shadow-sm mt-1 transition-colors"
+          :class="msg.type === 'user' ? 'bg-blue-600 text-white shadow-blue-500/20' : 'bg-white dark:bg-slate-800 text-blue-600 dark:text-cyan-400 border border-gray-200 dark:border-slate-700'"
         >
           <el-icon v-if="msg.type === 'user'"><User /></el-icon>
-          <el-icon v-else><Monitor /></el-icon>
+          <el-icon v-else size="20"><Monitor /></el-icon>
         </div>
 
         <!-- Content -->
@@ -52,24 +80,24 @@
           <!-- Text Bubble -->
           <div
             :class="[
-              'p-4 rounded-2xl text-sm shadow-sm',
+              'text-sm transition-all',
               msg.type === 'user'
-                ? 'bg-blue-500 text-white rounded-tr-none'
-                : 'bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-tl-none'
+                ? 'bg-blue-600 text-white p-4 rounded-3xl rounded-tr-sm shadow-md shadow-blue-500/10'
+                : 'bg-white dark:bg-slate-800 text-gray-800 dark:text-slate-200 p-6 rounded-3xl rounded-tl-sm border border-gray-200 dark:border-slate-700 shadow-sm'
             ]"
           >
             <div v-if="msg.loading" class="space-y-3">
               <!-- Fake Loading Steps -->
-              <div class="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+              <div class="flex items-center gap-2 text-gray-500 dark:text-slate-400">
                 <el-icon class="is-loading"><Loading /></el-icon>
                 <span>{{ currentLoadingStep }}</span>
               </div>
               <div class="space-y-2 pl-6">
                 <div v-for="(step, idx) in loadingSteps" :key="idx" class="flex items-center gap-2 text-xs">
-                  <el-icon v-if="idx < currentLoadingStepIndex" class="text-green-500"><Check /></el-icon>
+                  <el-icon v-if="idx < currentLoadingStepIndex" class="text-emerald-500"><Check /></el-icon>
                   <el-icon v-else-if="idx === currentLoadingStepIndex" class="is-loading text-blue-500"><Loading /></el-icon>
-                  <el-icon v-else class="text-gray-300"><Clock /></el-icon>
-                  <span :class="idx <= currentLoadingStepIndex ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400'">
+                  <el-icon v-else class="text-gray-400 dark:text-slate-600"><Clock /></el-icon>
+                  <span :class="idx <= currentLoadingStepIndex ? 'text-gray-600 dark:text-slate-300' : 'text-gray-400 dark:text-slate-500'">
                     {{ step }}
                   </span>
                 </div>
@@ -78,13 +106,13 @@
             
             <div v-else>
               <!-- Error Message (仅显示真正的系统错误) -->
-              <div v-if="msg.error && msg.isSystemError" class="flex items-start gap-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+              <div v-if="msg.error && msg.isSystemError" class="flex items-start gap-3 p-4 bg-red-900/20 border border-red-800 rounded-xl">
                 <el-icon class="text-red-500 text-xl mt-0.5 flex-shrink-0">
                   <Warning />
                 </el-icon>
                 <div class="flex-1">
-                  <p class="text-sm font-medium text-red-800 dark:text-red-400 mb-1">系统错误</p>
-                  <p class="text-sm text-red-700 dark:text-red-300">{{ msg.content }}</p>
+                  <p class="text-sm font-medium text-red-400 mb-1">系统错误</p>
+                  <p class="text-sm text-red-300">{{ msg.content }}</p>
                 </div>
               </div>
 
@@ -93,13 +121,13 @@
                 <!-- Clarification Request -->
                 <div v-if="msg.chartType === 'clarification'" class="space-y-3">
                   <!-- 纯文本消息，自然风格 -->
-                  <div class="text-sm text-gray-900 dark:text-gray-100 whitespace-pre-wrap leading-relaxed">
+                  <div class="text-sm text-gray-800 dark:text-slate-100 whitespace-pre-wrap leading-relaxed">
                     {{ msg.content }}
                   </div>
                   
                   <!-- Quick Reply Suggestions -->
-                  <div v-if="getClarificationSuggestions(msg.content || '').length > 0" class="space-y-2">
-                    <p class="text-xs text-gray-500 dark:text-gray-400 font-medium">✨ 快捷回复：</p>
+                  <div v-if="getClarificationSuggestions(msg.content || '').length > 0" class="space-y-2 pt-2">
+                    <p class="text-xs text-gray-500 dark:text-slate-500 font-medium">✨ 快捷回复：</p>
                     <div class="flex flex-wrap gap-2">
                       <el-tag
                         v-for="(suggestion, idx) in getClarificationSuggestions(msg.content || '')"
@@ -107,7 +135,7 @@
                         type="info"
                         effect="plain"
                         size="default"
-                        class="cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/40 hover:border-blue-400 dark:hover:border-blue-600 transition-all duration-200 hover:shadow-md"
+                        class="cursor-pointer !bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-600 !text-gray-600 dark:!text-slate-300 hover:!bg-gray-50 dark:hover:!bg-slate-700 hover:!border-blue-300 dark:hover:!border-slate-500 transition-all duration-200"
                         @click="handleQuickReply(suggestion)"
                       >
                         {{ suggestion }}
@@ -118,17 +146,17 @@
                 
                 <!-- Thinking Steps (Real) -->
                 <div v-if="msg.steps && msg.steps.length > 0" class="mb-4">
-                  <el-collapse class="thinking-steps-collapse">
-                    <el-collapse-item :name="1">
+                  <el-collapse class="thinking-steps-collapse border-none" v-model="activeCollapse">
+                    <el-collapse-item :name="`step-${index}`">
                       <template #title>
-                        <div class="flex items-center gap-2 text-xs">
-                          <el-icon class="text-blue-500"><Operation /></el-icon>
-                          <span class="font-medium">
+                        <div class="flex items-center gap-2 text-xs py-1 px-2 rounded hover:bg-gray-100 dark:hover:bg-slate-800/50 transition-colors cursor-pointer">
+                          <el-icon class="text-blue-500 dark:text-cyan-500"><Operation /></el-icon>
+                          <span class="font-medium text-gray-500 dark:text-slate-400">
                             {{ getStepsSummary(msg.steps) }}
                           </span>
                         </div>
                       </template>
-                      <div class="space-y-2 text-xs">
+                      <div class="space-y-2 text-xs p-3 bg-gray-50 dark:bg-slate-900/50 rounded-lg border border-gray-100 dark:border-slate-800 mt-2">
                         <div
                           v-for="(step, idx) in msg.steps"
                           :key="idx"
@@ -151,33 +179,34 @@
                   </el-collapse>
                 </div>
 
-                <p v-if="msg.content && msg.chartType !== 'clarification'" class="whitespace-pre-wrap">{{ msg.content }}</p>
+                <p v-if="msg.content && msg.chartType !== 'clarification'" class="whitespace-pre-wrap text-gray-800 dark:text-slate-200 leading-relaxed">{{ msg.content }}</p>
                 
                 <!-- 结果摘要（仅显示单数据结果） -->
-                <div v-if="msg.chartData && msg.chartData.rows && msg.chartData.rows.length === 1 && msg.chartType !== 'clarification'" class="my-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                <div v-if="msg.chartData && msg.chartData.rows && msg.chartData.rows.length === 1 && msg.chartType !== 'clarification'" class="my-4 p-5 bg-gray-50 dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 shadow-inner">
                   <div class="flex items-center gap-2 mb-2">
-                    <el-icon class="text-blue-500"><CircleCheck /></el-icon>
-                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">查询结果</span>
+                    <el-icon class="text-blue-500 dark:text-cyan-500"><CircleCheck /></el-icon>
+                    <span class="text-sm font-medium text-gray-500 dark:text-slate-400">查询结果</span>
                   </div>
-                  <div class="text-2xl font-bold text-gray-900 dark:text-gray-100">
+                  <div class="text-2xl font-bold text-gray-900 dark:text-slate-100">
                     {{ formatSingleResult(msg.chartData) }}
                   </div>
                 </div>
                 
                 <!-- Chart -->
                 <div v-if="msg.chartData && msg.chartData.columns && msg.chartData.rows && msg.chartData.rows.length > 0" class="space-y-2">
-                  <div class="h-80 w-full bg-gray-50 dark:bg-gray-900 rounded-lg p-2 border border-gray-100 dark:border-gray-800">
+                  <div class="h-80 w-full bg-white dark:bg-slate-900 rounded-xl p-4 border border-gray-200 dark:border-slate-800 shadow-inner overflow-hidden">
                      <DynamicChart
                        :chart-type="msg.chartType || 'table'"
                        :data="{ columns: msg.chartData.columns, rows: msg.chartData.rows }"
                      />
                   </div>
                   <!-- Save to Dashboard Button -->
-                  <div class="flex justify-end">
+                  <div class="flex justify-end opacity-0 group-hover:opacity-100 transition-opacity">
                     <el-button
                       size="small"
                       @click="handleSaveToDashboard(msg, index)"
                       :icon="DocumentAdd"
+                      class="!bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-700 !text-gray-600 dark:!text-slate-300 hover:!bg-gray-50 dark:hover:!bg-slate-700 !rounded-md"
                     >
                       保存到看板
                     </el-button>
@@ -185,33 +214,40 @@
                 </div>
 
                 <!-- SQL Collapse -->
-                <el-collapse v-if="msg.sql" class="border-t-0">
-                  <el-collapse-item title="查看生成的 SQL" name="1">
-                    <div class="bg-gray-900 text-gray-300 p-3 rounded-md font-mono text-xs overflow-x-auto">
+                <el-collapse v-if="msg.sql" class="border-t-0 mt-2">
+                  <el-collapse-item name="1">
+                    <template #title>
+                        <span class="text-xs text-gray-400 dark:text-slate-500 hover:text-gray-600 dark:hover:text-slate-300 transition-colors">查看 SQL 详情</span>
+                    </template>
+                    <div class="bg-gray-50 dark:bg-slate-950 text-gray-600 dark:text-slate-300 p-4 rounded-xl font-mono text-xs overflow-x-auto border border-gray-200 dark:border-slate-800 shadow-inner">
                       {{ msg.sql }}
                     </div>
                     
                     <!-- Feedback Buttons -->
-                    <div class="flex items-center gap-3 mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
-                      <span class="text-xs text-gray-500 dark:text-gray-400">这个结果有帮助吗？</span>
-                      <el-button
-                        size="small"
-                        :type="msg.feedbackGiven === 'like' ? 'success' : 'default'"
-                        :disabled="msg.feedbackGiven !== undefined"
-                        @click="handleLikeFeedback(msg, index)"
-                      >
-                        <el-icon class="mr-1"><Select /></el-icon>
-                        {{ msg.feedbackGiven === 'like' ? '已喜欢' : '喜欢' }}
-                      </el-button>
-                      <el-button
-                        size="small"
-                        :type="msg.feedbackGiven === 'dislike' ? 'danger' : 'default'"
-                        :disabled="msg.feedbackGiven !== undefined"
-                        @click="handleDislikeFeedback(msg, index)"
-                      >
-                        <el-icon class="mr-1"><CloseBold /></el-icon>
-                        {{ msg.feedbackGiven === 'dislike' ? '已反馈' : '不满意' }}
-                      </el-button>
+                    <div class="flex items-center gap-3 mt-3 pt-3">
+                      <span class="text-xs text-gray-400 dark:text-slate-500">结果评价：</span>
+                      <div class="flex gap-2">
+                        <el-button
+                            size="small"
+                            :type="msg.feedbackGiven === 'like' ? 'success' : 'default'"
+                            :disabled="msg.feedbackGiven !== undefined"
+                            @click="handleLikeFeedback(msg, index)"
+                            circle
+                            class="!bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-700 !text-gray-400 dark:!text-slate-400 hover:!text-green-500 dark:hover:!text-green-400 hover:!border-green-200 dark:hover:!border-green-500/50"
+                        >
+                            <el-icon><Select /></el-icon>
+                        </el-button>
+                        <el-button
+                            size="small"
+                            :type="msg.feedbackGiven === 'dislike' ? 'danger' : 'default'"
+                            :disabled="msg.feedbackGiven !== undefined"
+                            @click="handleDislikeFeedback(msg, index)"
+                            circle
+                            class="!bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-700 !text-gray-400 dark:!text-slate-400 hover:!text-red-500 dark:hover:!text-red-400 hover:!border-red-200 dark:hover:!border-red-500/50"
+                        >
+                            <el-icon><CloseBold /></el-icon>
+                        </el-button>
+                      </div>
                     </div>
                   </el-collapse-item>
                 </el-collapse>
@@ -223,17 +259,17 @@
     </div>
 
     <!-- Input Area -->
-    <div class="p-4 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 flex-shrink-0">
-      <div class="max-w-5xl mx-auto flex gap-4">
+    <div class="p-4 pb-8 bg-transparent flex-shrink-0 flex justify-center z-20">
+      <div class="w-full max-w-4xl bg-white dark:bg-slate-800 rounded-full shadow-xl dark:shadow-black/50 border border-gray-300 dark:border-slate-700/50 p-2 pl-6 flex items-center gap-4 transition-all hover:border-blue-400 dark:hover:border-slate-600">
         <el-input
           v-model="inputMessage"
           placeholder="请输入您的问题..."
           @keyup.enter="handleSend"
           :disabled="!currentDatasetId || sending"
-          class="flex-1"
+          class="flex-1 custom-chat-input"
         >
           <template #prefix>
-            <el-icon><Search /></el-icon>
+            <el-icon class="text-gray-400 dark:text-slate-400"><Search /></el-icon>
           </template>
         </el-input>
         <el-button
@@ -241,7 +277,7 @@
           @click="handleSend"
           :loading="sending"
           :disabled="!currentDatasetId || !inputMessage.trim()"
-          class="px-6"
+          class="!rounded-full px-8 !bg-gradient-to-r !from-blue-600 !to-cyan-600 !border-none hover:!opacity-90 hover:!shadow-lg hover:!shadow-blue-500/20 dark:hover:!shadow-cyan-500/20 transition-all"
         >
           发送
         </el-button>
@@ -253,6 +289,7 @@
       v-model="saveToDashboardDialog"
       title="保存到看板"
       width="500px"
+      class="custom-dialog"
     >
       <el-form label-width="100px">
         <el-form-item label="卡片标题">
@@ -293,10 +330,11 @@
       v-model="sqlCorrectionDialog"
       title="修正 SQL"
       width="700px"
+      class="custom-dialog"
     >
       <div class="space-y-4">
         <div>
-          <p class="text-sm text-gray-600 dark:text-gray-400 mb-2">请修改下方的 SQL 查询，然后提交给 AI 学习：</p>
+          <p class="text-sm text-slate-400 mb-2">请修改下方的 SQL 查询，然后提交给 AI 学习：</p>
           <el-input
             v-model="correctedSql"
             type="textarea"
@@ -344,7 +382,12 @@ import {
   WarningFilled,
   QuestionFilled,
   Select,
-  CloseBold
+  CloseBold,
+  TrendCharts,
+  PieChart,
+  DataLine,
+  DataBoard,
+  DataAnalysis
 } from '@element-plus/icons-vue'
 import { getDatasetList, type Dataset } from '@/api/dataset'
 import { sendChat, submitFeedback } from '@/api/chat'
@@ -373,6 +416,35 @@ const messages = ref<Message[]>([])
 const inputMessage = ref('')
 const sending = ref(false)
 const chatContainer = ref<HTMLElement | null>(null)
+const activeCollapse = ref<string[]>([])
+
+// Recommendation Cards Data
+const recommendCards = [
+  {
+    title: '销售趋势分析',
+    desc: '查看本年度每月的销售额变化趋势',
+    icon: TrendCharts,
+    query: '按月统计今年的销售额趋势'
+  },
+  {
+    title: '产品类别占比',
+    desc: '分析各产品类别的销售占比情况',
+    icon: PieChart,
+    query: '统计各产品类别的销售额占比'
+  },
+  {
+    title: 'Top 10 客户',
+    desc: '找出贡献销售额最高的10位客户',
+    icon: DataLine,
+    query: '列出销售额最高的10个客户'
+  },
+  {
+    title: '库存状态概览',
+    desc: '检查当前库存量较低的产品',
+    icon: DataBoard,
+    query: '查询库存量少于100的产品'
+  }
+]
 
 // Loading Animation State
 const loadingSteps = [
@@ -423,6 +495,15 @@ onUnmounted(() => {
     clearInterval(loadingInterval)
   }
 })
+
+const handleCardClick = (card: typeof recommendCards[0]) => {
+  if (!currentDatasetId.value) {
+    ElMessage.warning('请先选择一个数据集')
+    return
+  }
+  inputMessage.value = card.query
+  handleSend()
+}
 
 const startLoadingAnimation = () => {
   currentLoadingStepIndex.value = 0
@@ -571,9 +652,9 @@ const getStepIconClass = (step: string) => {
 
 const getStepTextClass = (step: string) => {
   if (step.includes('失败') || step.includes('出错')) {
-    return 'text-gray-600 dark:text-gray-400'
+    return 'text-gray-400'
   } else {
-    return 'text-gray-700 dark:text-gray-300'
+    return 'text-gray-300'
   }
 }
 
@@ -894,33 +975,54 @@ const handleSubmitCorrection = async () => {
 <style scoped>
 /* Thinking Steps Collapse Custom Styling */
 .thinking-steps-collapse :deep(.el-collapse-item__header) {
-  padding: 8px 12px;
-  background-color: #f9fafb;
-  border-radius: 6px;
-  border: 1px solid #e5e7eb;
+  padding: 0;
+  background-color: transparent;
+  border: none;
   font-size: 13px;
+  height: auto;
+  line-height: normal;
 }
 
-.dark .thinking-steps-collapse :deep(.el-collapse-item__header) {
-  background-color: #1f2937;
-  border-color: #374151;
+.thinking-steps-collapse :deep(.el-collapse-item__arrow) {
+  margin: 0 0 0 8px;
 }
 
 .thinking-steps-collapse :deep(.el-collapse-item__content) {
-  padding: 12px 12px 8px 12px;
-  background-color: #fefefe;
-  border: 1px solid #e5e7eb;
-  border-top: none;
-  border-bottom-left-radius: 6px;
-  border-bottom-right-radius: 6px;
-}
-
-.dark .thinking-steps-collapse :deep(.el-collapse-item__content) {
-  background-color: #111827;
-  border-color: #374151;
+  padding-bottom: 0;
 }
 
 .thinking-steps-collapse :deep(.el-collapse-item__wrap) {
   border: none;
+  background-color: transparent;
+}
+
+/* Custom Input Styling */
+.custom-chat-input :deep(.el-input__wrapper) {
+  background-color: transparent !important;
+  box-shadow: none !important;
+  padding-left: 0;
+}
+
+.custom-chat-input :deep(.el-input__inner) {
+  color: #e2e8f0 !important;
+  font-size: 1rem;
+}
+
+.custom-chat-input :deep(.el-input__inner::placeholder) {
+  color: #64748b;
+}
+
+/* Custom Dialog Dark Mode */
+.custom-dialog :deep(.el-dialog) {
+  background-color: #1e293b;
+  border: 1px solid #334155;
+}
+
+.custom-dialog :deep(.el-dialog__title) {
+  color: #f1f5f9;
+}
+
+.custom-dialog :deep(.el-dialog__body) {
+  color: #cbd5e1;
 }
 </style>

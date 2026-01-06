@@ -33,7 +33,7 @@
     <!-- Step 2: 选择数据表 -->
     <div v-show="activeStep === 1" class="py-4">
       <div v-if="loadingTables" class="flex justify-center py-8">
-        <el-spinner class="w-8 h-8 text-blue-500" />
+        <el-icon class="is-loading text-3xl text-gray-400 dark:text-slate-400"><Loading /></el-icon>
       </div>
       <el-transfer
         v-else
@@ -74,6 +74,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Loading } from '@element-plus/icons-vue'
 import { getDataSourceList, type DataSource } from '@/api/datasource'
 import { createDataset, updateDatasetTables, trainDataset, getDbTables } from '@/api/dataset'
 

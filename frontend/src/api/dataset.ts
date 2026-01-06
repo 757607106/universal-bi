@@ -1,7 +1,5 @@
-import axios from 'axios'
+import { http } from "@/utils/http"
 import { getTables as getDataSourceTables } from './datasource'
-
-const API_BASE_URL = 'http://127.0.0.1:8000/api/v1'
 
 export interface Dataset {
   id: number
@@ -18,31 +16,20 @@ export interface DatasetCreate {
   datasource_id: number
 }
 
-const apiClient = axios.create({
-  baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-})
-
 export const getDatasetList = async () => {
-  const response = await apiClient.get<Dataset[]>('/datasets/')
-  return response.data
+  return await http.get<Dataset[], any>('/datasets/')
 }
 
 export const createDataset = async (data: DatasetCreate) => {
-  const response = await apiClient.post<Dataset>('/datasets/', data)
-  return response.data
+  return await http.post<Dataset, DatasetCreate>('/datasets/', data)
 }
 
 export const updateDatasetTables = async (id: number, tables: string[]) => {
-  const response = await apiClient.put<Dataset>(`/datasets/${id}/tables`, { schema_config: tables })
-  return response.data
+  return await http.put<Dataset, { schema_config: string[] }>(`/datasets/${id}/tables`, { schema_config: tables })
 }
 
 export const trainDataset = async (id: number) => {
-  const response = await apiClient.post<any>(`/datasets/${id}/train`)
-  return response.data
+  return await http.post<any, any>(`/datasets/${id}/train`)
 }
 
 // Re-export or wrap the datasource table fetching

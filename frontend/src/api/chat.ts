@@ -1,13 +1,4 @@
-import axios from 'axios'
-
-const API_BASE_URL = 'http://127.0.0.1:8000/api/v1'
-
-const apiClient = axios.create({
-  baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-})
+import { http } from "@/utils/http"
 
 export interface ChatResponse {
   answer_text?: string  // For clarification requests
@@ -36,21 +27,20 @@ export interface FeedbackResponse {
 }
 
 export const sendChat = async (data: { dataset_id: number, question: string }) => {
-  const response = await apiClient.post<any>('/chat/', data)
+  const responseData = await http.post<any, { dataset_id: number, question: string }>('/chat/', data)
   // 直接返回后端数据，保留原始结构
   return {
-    answer_text: response.data.answer_text || response.data.summary,
-    sql: response.data.sql,
-    columns: response.data.columns,  // 直接传递
-    rows: response.data.rows,  // 直接传递
+    answer_text: responseData.answer_text || responseData.summary,
+    sql: responseData.sql,
+    columns: responseData.columns,  // 直接传递
+    rows: responseData.rows,  // 直接传递
     data: null,  // 不再包装
-    chart_type: response.data.chart_type,
-    steps: response.data.steps || [],
-    from_cache: response.data.from_cache || false
+    chart_type: responseData.chart_type,
+    steps: responseData.steps || [],
+    from_cache: responseData.from_cache || false
   } as ChatResponse
 }
 
 export const submitFeedback = async (data: FeedbackRequest): Promise<FeedbackResponse> => {
-  const response = await apiClient.post<FeedbackResponse>('/chat/feedback', data)
-  return response.data
+  return await http.post<FeedbackResponse, FeedbackRequest>('/chat/feedback', data)
 }

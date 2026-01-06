@@ -1,13 +1,4 @@
-import axios from 'axios'
-
-const API_BASE_URL = 'http://127.0.0.1:8000/api/v1'
-
-const apiClient = axios.create({
-  baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-})
+import { http } from "@/utils/http"
 
 export interface Dashboard {
   id: number
@@ -40,18 +31,15 @@ export interface CardData {
 }
 
 export const getDashboards = async (): Promise<Dashboard[]> => {
-  const response = await apiClient.get<Dashboard[]>('/dashboards/')
-  return response.data
+  return await http.get<Dashboard[], any>('/dashboards/')
 }
 
 export const createDashboard = async (name: string, description?: string): Promise<Dashboard> => {
-  const response = await apiClient.post<Dashboard>('/dashboards/', { name, description })
-  return response.data
+  return await http.post<Dashboard, { name: string, description?: string }>('/dashboards/', { name, description })
 }
 
 export const getDashboardDetail = async (id: number): Promise<Dashboard> => {
-  const response = await apiClient.get<Dashboard>(`/dashboards/${id}`)
-  return response.data
+  return await http.get<Dashboard, any>(`/dashboards/${id}`)
 }
 
 export const addCardToDashboard = async (
@@ -64,22 +52,20 @@ export const addCardToDashboard = async (
     layout?: any
   }
 ): Promise<DashboardCard> => {
-  const response = await apiClient.post<DashboardCard>(
+  return await http.post<DashboardCard, any>(
     `/dashboards/${dashboardId}/cards`,
     cardData
   )
-  return response.data
 }
 
 export const getCardData = async (cardId: number): Promise<CardData> => {
-  const response = await apiClient.get<CardData>(`/dashboards/cards/${cardId}/data`)
-  return response.data
+  return await http.get<CardData, any>(`/dashboards/cards/${cardId}/data`)
 }
 
 export const deleteCard = async (cardId: number): Promise<void> => {
-  await apiClient.delete(`/dashboards/cards/${cardId}`)
+  await http.delete<void, any>(`/dashboards/cards/${cardId}`)
 }
 
 export const deleteDashboard = async (dashboardId: number): Promise<void> => {
-  await apiClient.delete(`/dashboards/${dashboardId}`)
+  await http.delete<void, any>(`/dashboards/${dashboardId}`)
 }

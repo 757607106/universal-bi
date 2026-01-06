@@ -1,6 +1,4 @@
-import axios from 'axios'
-
-const API_BASE_URL = 'http://127.0.0.1:8000/api/v1'
+import { http } from "@/utils/http"
 
 export interface DataSourceForm {
   name: string
@@ -17,39 +15,26 @@ export interface DataSource extends DataSourceForm {
   password_encrypted?: string
 }
 
-const apiClient = axios.create({
-  baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-})
-
 export const testConnection = async (data: DataSourceForm) => {
-  const response = await apiClient.post<boolean>('/datasources/test', data)
-  return response.data
+  return await http.post<boolean, DataSourceForm>('/datasources/test', data)
 }
 
 export const addDataSource = async (data: DataSourceForm) => {
-  const response = await apiClient.post<DataSource>('/datasources/', data)
-  return response.data
+  return await http.post<DataSource, DataSourceForm>('/datasources/', data)
 }
 
 export const getDataSourceList = async () => {
-  const response = await apiClient.get<DataSource[]>('/datasources/')
-  return response.data
+  return await http.get<DataSource[], any>('/datasources/')
 }
 
 export const deleteDataSource = async (id: number) => {
-  const response = await apiClient.delete<boolean>(`/datasources/${id}`)
-  return response.data
+  return await http.delete<boolean, any>(`/datasources/${id}`)
 }
 
 export const getTables = async (id: number) => {
-  const response = await apiClient.get<string[]>(`/datasources/${id}/tables`)
-  return response.data
+  return await http.get<string[], any>(`/datasources/${id}/tables`)
 }
 
 export const previewTable = async (id: number, tableName: string) => {
-  const response = await apiClient.get<{ columns: { prop: string, label: string }[], rows: any[] }>(`/datasources/${id}/tables/${tableName}/preview`)
-  return response.data
+  return await http.get<{ columns: { prop: string, label: string }[], rows: any[] }, any>(`/datasources/${id}/tables/${tableName}/preview`)
 }

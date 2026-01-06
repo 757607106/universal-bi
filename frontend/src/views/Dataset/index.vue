@@ -1,12 +1,12 @@
 <template>
-  <div class="h-full overflow-auto bg-gray-50 dark:bg-gray-950 p-8">
+  <div class="h-full overflow-auto bg-transparent p-8">
     <div class="max-w-7xl mx-auto">
       <div class="flex items-center justify-between mb-8">
         <div>
-          <h1 class="text-3xl font-bold mb-2 text-gray-900 dark:text-gray-100">数据集管理</h1>
-          <p class="text-gray-600 dark:text-gray-400">构建和管理用于 AI 分析的业务数据集</p>
+          <h1 class="text-3xl font-bold mb-2 text-gray-900 dark:text-slate-100">数据集管理</h1>
+          <p class="text-gray-500 dark:text-slate-400">构建和管理用于 AI 分析的业务数据集</p>
         </div>
-        <el-button type="primary" @click="wizardVisible = true" class="bg-[#409EFF] shadow-lg shadow-blue-500/30">
+        <el-button type="primary" @click="wizardVisible = true" class="bg-blue-600 shadow-lg shadow-blue-500/30 hover:bg-blue-500 border-none">
           <el-icon class="mr-2"><Plus /></el-icon>
           新建数据集
         </el-button>
@@ -16,15 +16,15 @@
         <el-card
           v-for="dataset in datasetList"
           :key="dataset.id"
-          class="hover:shadow-lg transition-all duration-300 border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
+          class="hover:shadow-lg transition-all duration-300 border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-gray-900 dark:text-slate-200 group hover:border-blue-500 dark:hover:border-blue-500/50"
         >
           <template #header>
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2">
-                <el-icon class="text-[#409EFF]"><Files /></el-icon>
-                <span class="font-bold text-gray-900 dark:text-gray-100 truncate">{{ dataset.name }}</span>
+                <el-icon class="text-blue-500"><Files /></el-icon>
+                <span class="font-bold text-gray-900 dark:text-slate-100 truncate">{{ dataset.name }}</span>
               </div>
-              <el-tag :type="getStatusType(dataset.training_status)" effect="light" size="small">
+              <el-tag :type="getStatusType(dataset.training_status)" effect="dark" size="small" class="!bg-gray-100 dark:!bg-slate-700 !border-gray-200 dark:!border-slate-600 !text-gray-700 dark:!text-slate-200">
                 <div class="flex items-center gap-1">
                   <el-icon v-if="dataset.training_status === 'training'" class="is-loading"><Loading /></el-icon>
                   {{ getStatusText(dataset.training_status) }}
@@ -35,25 +35,25 @@
           
           <div class="space-y-4">
             <div class="flex items-center justify-between text-sm">
-              <span class="text-gray-500 dark:text-gray-400">Collection</span>
-              <span class="font-mono text-xs bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ dataset.collection_name || 'N/A' }}</span>
+              <span class="text-gray-500 dark:text-slate-400">Collection</span>
+              <span class="font-mono text-xs bg-gray-50 dark:bg-slate-900/50 px-2 py-1 rounded text-gray-600 dark:text-slate-300 border border-gray-200 dark:border-slate-700">{{ dataset.collection_name || 'N/A' }}</span>
             </div>
             
             <div class="flex items-center justify-between text-sm">
-              <span class="text-gray-500 dark:text-gray-400">包含表</span>
-              <span class="font-medium">{{ dataset.schema_config?.length || 0 }} 个</span>
+              <span class="text-gray-500 dark:text-slate-400">包含表</span>
+              <span class="font-medium text-gray-900 dark:text-slate-200">{{ dataset.schema_config?.length || 0 }} 个</span>
             </div>
 
             <div class="flex items-center justify-between text-sm">
-              <span class="text-gray-500 dark:text-gray-400">上次训练</span>
-              <span class="text-gray-700 dark:text-gray-300">{{ formatDate(dataset.last_trained_at) }}</span>
+              <span class="text-gray-500 dark:text-slate-400">上次训练</span>
+              <span class="text-gray-600 dark:text-slate-300">{{ formatDate(dataset.last_trained_at) }}</span>
             </div>
             
-            <div class="pt-4 border-t border-gray-100 dark:border-gray-800 flex justify-end gap-2">
-              <el-button v-if="dataset.training_status !== 'training'" size="small" @click="handleRetrain(dataset)">
+            <div class="pt-4 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2">
+              <el-button v-if="dataset.training_status !== 'training'" size="small" @click="handleRetrain(dataset)" class="!bg-gray-100 dark:!bg-slate-700 hover:!bg-gray-200 dark:hover:!bg-slate-600 !border-gray-200 dark:!border-slate-600 !text-gray-700 dark:!text-slate-200">
                 重新训练
               </el-button>
-              <el-button size="small" type="primary" plain>详情</el-button>
+              <el-button size="small" type="primary" plain class="!bg-blue-50 dark:!bg-blue-500/10 !border-blue-200 dark:!border-blue-500/50 !text-blue-600 dark:!text-blue-400 hover:!bg-blue-100 dark:hover:!bg-blue-500/20">详情</el-button>
             </div>
           </div>
         </el-card>

@@ -1,9 +1,9 @@
 <template>
-  <div class="h-full flex flex-col bg-gray-50 dark:bg-gray-950">
+  <div class="h-full flex flex-col bg-transparent">
     <!-- Header -->
-    <div class="h-16 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-6 flex items-center justify-between flex-shrink-0">
-      <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">我的看板</h2>
-      <el-button type="primary" @click="handleCreateDashboard" :icon="Plus">
+    <div class="h-16 border-b border-gray-200 dark:border-slate-700/50 bg-transparent px-6 flex items-center justify-between flex-shrink-0">
+      <h2 class="text-lg font-semibold text-gray-900 dark:text-slate-100">我的看板</h2>
+      <el-button type="primary" @click="handleCreateDashboard" :icon="Plus" class="!bg-blue-600 !border-none hover:!bg-blue-500">
         新建看板
       </el-button>
     </div>
@@ -12,13 +12,13 @@
     <div class="flex-1 overflow-y-auto p-6">
       <!-- Loading State -->
       <div v-if="loading" class="flex items-center justify-center h-64">
-        <el-icon class="is-loading text-4xl text-gray-400"><Loading /></el-icon>
+        <el-icon class="is-loading text-4xl text-gray-400 dark:text-slate-400"><Loading /></el-icon>
       </div>
 
       <!-- Empty State -->
       <div v-else-if="dashboards.length === 0" class="flex flex-col items-center justify-center h-64">
-        <el-icon class="text-6xl text-gray-300 dark:text-gray-700 mb-4"><DataBoard /></el-icon>
-        <p class="text-gray-500 dark:text-gray-400 mb-4">还没有创建看板</p>
+        <el-icon class="text-6xl text-gray-300 dark:text-slate-700 mb-4"><DataBoard /></el-icon>
+        <p class="text-gray-500 dark:text-slate-400 mb-4">还没有创建看板</p>
         <el-button type="primary" @click="handleCreateDashboard">创建第一个看板</el-button>
       </div>
 
@@ -28,17 +28,17 @@
           v-for="dashboard in dashboards"
           :key="dashboard.id"
           shadow="hover"
-          class="cursor-pointer hover:border-blue-500 transition-colors"
+          class="cursor-pointer transition-all duration-300 bg-white dark:!bg-slate-800 border-gray-200 dark:!border-slate-700 group hover:border-blue-500 dark:hover:!border-blue-500/50"
           @click="goToDashboard(dashboard.id)"
         >
           <template #header>
             <div class="flex items-center justify-between">
-              <span class="font-semibold text-gray-900 dark:text-gray-100">{{ dashboard.name }}</span>
+              <span class="font-semibold text-gray-900 dark:text-slate-100">{{ dashboard.name }}</span>
               <el-dropdown @command="handleCommand($event, dashboard.id)">
-                <el-icon class="cursor-pointer hover:text-blue-500"><MoreFilled /></el-icon>
+                <el-icon class="cursor-pointer text-gray-400 dark:text-slate-400 hover:text-blue-500"><MoreFilled /></el-icon>
                 <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item command="delete" :icon="Delete">删除</el-dropdown-item>
+                  <el-dropdown-menu class="bg-white dark:!bg-slate-800 border-gray-200 dark:!border-slate-700">
+                    <el-dropdown-item command="delete" :icon="Delete" class="text-gray-600 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-700">删除</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
@@ -46,11 +46,11 @@
           </template>
           
           <div class="space-y-3">
-            <p v-if="dashboard.description" class="text-sm text-gray-600 dark:text-gray-400">
+            <p v-if="dashboard.description" class="text-sm text-gray-500 dark:text-slate-400">
               {{ dashboard.description }}
             </p>
             
-            <div class="flex items-center justify-between text-xs text-gray-500 dark:text-gray-500">
+            <div class="flex items-center justify-between text-xs text-gray-400 dark:text-slate-500">
               <div class="flex items-center gap-1">
                 <el-icon><Grid /></el-icon>
                 <span>{{ dashboard.cards.length }} 个卡片</span>

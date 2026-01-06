@@ -8,6 +8,9 @@ import router from './router'
 import App from './App.vue'
 import './style.css'
 
+// Force dark mode
+document.documentElement.classList.add('dark')
+
 const app = createApp(App)
 
 // 注册所有Element Plus图标

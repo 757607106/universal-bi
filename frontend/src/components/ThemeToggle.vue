@@ -1,22 +1,18 @@
 <template>
-  <el-button
-    link
+  <button
     @click="toggleTheme"
-    class="relative rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 p-2"
+    class="p-2 rounded-full transition-all duration-300 hover:bg-gray-200 dark:hover:bg-slate-700 focus:outline-none ring-offset-2 focus:ring-2 ring-blue-500"
+    :title="isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'"
   >
-    <el-icon class="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0 text-gray-700">
-      <Sunny />
+    <el-icon :size="20" class="text-gray-600 dark:text-gray-300">
+      <Icon :icon="isDark ? 'ep:sunny' : 'ep:moon'" />
     </el-icon>
-    <el-icon class="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100 text-gray-200">
-      <Moon />
-    </el-icon>
-    <span class="sr-only">切换主题</span>
-  </el-button>
+  </button>
 </template>
 
 <script setup lang="ts">
-import { Sunny, Moon } from '@element-plus/icons-vue'
-import { useTheme } from '../composables/useTheme'
+import { Icon } from '@iconify/vue'
+import { useTheme } from '@/composables/useTheme'
 
-const { toggleTheme } = useTheme()
+const { isDark, toggleTheme } = useTheme()
 </script>
