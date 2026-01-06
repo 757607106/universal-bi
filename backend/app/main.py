@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1.endpoints import datasource, dataset, chat, dashboard
+from app.api.v1.endpoints import datasource, dataset, chat, dashboard, auth, admin
 from app.core.config import settings
 from app.db.session import engine
 from app.models import metadata
@@ -26,6 +26,8 @@ app.include_router(datasource.router, prefix=f"{settings.API_V1_STR}/datasources
 app.include_router(dataset.router, prefix=f"{settings.API_V1_STR}/datasets", tags=["datasets"])
 app.include_router(chat.router, prefix=f"{settings.API_V1_STR}/chat", tags=["chat"])
 app.include_router(dashboard.router, prefix=f"{settings.API_V1_STR}/dashboards", tags=["dashboards"])
+app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
+app.include_router(admin.router, prefix=f"{settings.API_V1_STR}/admin", tags=["admin"])
 
 @app.get("/")
 def root():

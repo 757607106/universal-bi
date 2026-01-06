@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.api.deps import get_current_user, apply_ownership_filter
+from app.models.metadata import User, Dataset
 from app.schemas.chat import ChatRequest, ChatResponse, FeedbackRequest, FeedbackResponse
 from app.services.vanna_manager import VannaManager
 
@@ -10,11 +12,21 @@ router = APIRouter()
 @router.post("/", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Chat with the dataset to generate SQL and results.
+    应用数据隔离：需要验证 Dataset 的访问权
     """
+    # 验证 Dataset 访问权限
+    ds_query = db.query(Dataset).filter(Dataset.id == request.dataset_id)
+    ds_query = apply_ownership_filter(ds_query, Dataset, current_user)
+    dataset = ds_query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
     try:
         result = await VannaManager.generate_result(
             dataset_id=request.dataset_id,
@@ -31,20 +43,35 @@ async def chat(
 @router.post("/feedback", response_model=FeedbackResponse)
 async def submit_feedback(
     request: FeedbackRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Submit user feedback on AI-generated SQL.
     Positive feedback (rating=1) trains the AI with the correct Q-SQL pair.
     Negative feedback (rating=-1) with corrected SQL also trains the AI.
+    应用数据隔离：需要验证 Dataset 的访问权
     
     Args:
         request: Feedback request containing dataset_id, question, sql, and rating
         db: Database session
+        current_user: Current authenticated user
     
     Returns:
         FeedbackResponse with success status and message
     """
+    # 验证 Dataset 访问权限
+    ds_query = db.query(Dataset).filter(Dataset.id == request.dataset_id)
+    ds_query = apply_ownership_filter(ds_query, Dataset, current_user)
+    dataset = ds_query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    # 额外检查：公共资源只有超级管理员可以训练
+    if dataset.owner_id is None and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Cannot train public resources")
+    
     try:
         # Only train on positive feedback or corrected SQL
         if request.rating == 1:

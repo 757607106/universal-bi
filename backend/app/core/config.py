@@ -5,9 +5,12 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Universal BI"
     API_V1_STR: str = "/api/v1"
     SECRET_KEY: str = "change_this_to_a_secure_random_key_in_production"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     SQLALCHEMY_DATABASE_URI: str = "sqlite:///./sql_app.db"
 
     # Vanna & LLM Config
+    # API Key 从 .env 或系统环境变量读取
     DASHSCOPE_API_KEY: str = ""
     QWEN_MODEL: str = "qwen-max"
     
@@ -25,5 +28,6 @@ class Settings(BaseSettings):
 
     class Config:
         case_sensitive = True
+        env_file = ".env"  # 支持从 .env 文件读取配置
 
 settings = Settings()

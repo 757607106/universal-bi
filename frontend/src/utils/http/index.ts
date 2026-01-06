@@ -6,11 +6,12 @@ import Axios, {
 } from "axios";
 import NProgress from "nprogress";
 import "nprogress/nprogress.css";
+import { getToken, removeToken } from "@/utils/auth";
 
 // 默认配置
 const defaultConfig: AxiosRequestConfig = {
-  baseURL: "http://127.0.0.1:8000/api/v1",
-  timeout: 10000,
+  baseURL: "/api/v1",
+  timeout: 60000,  // AI 查询可能需要更长时间，设置为 60 秒
   headers: {
     "Content-Type": "application/json",
     "X-Requested-With": "XMLHttpRequest"
@@ -36,10 +37,10 @@ class PureHttp {
         // 开启进度条
         NProgress.start();
         // 可以在这里添加token
-        // const token = getToken();
-        // if (token) {
-        //   config.headers["Authorization"] = formatToken(token);
-        // }
+        const token = getToken();
+        if (token) {
+          config.headers["Authorization"] = `Bearer ${token}`;
+        }
         return config;
       },
       error => {
@@ -70,6 +71,8 @@ class PureHttp {
             break;
           case 401:
             message = "未授权，请登录";
+            removeToken();
+            window.location.href = "/login";
             break;
           case 403:
             message = "拒绝访问";

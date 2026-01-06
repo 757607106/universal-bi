@@ -51,29 +51,59 @@
       </div>
 
       <!-- 用户信息 -->
-      <div class="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer group">
+      <div class="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer group" @click="handleLogout">
         <el-avatar :size="36" class="!bg-blue-100 !text-blue-600 dark:!bg-blue-900 dark:!text-blue-200 border-2 border-white dark:border-slate-700 shadow-sm">{{ userStore.avatar }}</el-avatar>
         <div class="flex-1 min-w-0">
           <p class="text-sm font-medium text-gray-900 dark:text-slate-200 truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">{{ userStore.username }}</p>
           <p class="text-xs text-gray-500 dark:text-slate-500 truncate">{{ userStore.email }}</p>
         </div>
+        <el-icon class="text-gray-400 dark:text-slate-500 group-hover:text-blue-500 transition-colors">
+          <component :is="useRenderIcon('ep:switch-button')" />
+        </el-icon>
       </div>
     </div>
   </aside>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRenderIcon } from '@/components/ReIcon'
 import ThemeToggle from './ThemeToggle.vue'
 import { useUserStore } from '@/store/modules/user'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 
 const userStore = useUserStore()
+const router = useRouter()
 
-const navigation = [
+const baseNavigation = [
   { id: 'connections', label: '数据连接', icon: useRenderIcon('ep:data-analysis'), path: '/connections' },
   { id: 'datasets', label: '数据集管理', icon: useRenderIcon('ep:files'), path: '/datasets' },
   { id: 'chat', label: '智能问答', icon: useRenderIcon('ep:chat-dot-round'), path: '/chat' },
   { id: 'dashboard', label: '数据看板', icon: useRenderIcon('ep:grid'), path: '/dashboard' },
-  { id: 'settings', label: '系统设置', icon: useRenderIcon('ep:setting'), path: '/settings' },
 ]
+
+const adminNavigation = [
+  { id: 'system-user', label: '用户管理', icon: useRenderIcon('ep:user'), path: '/system/user' },
+]
+
+// 根据用户权限动态生成导航菜单
+const navigation = computed(() => {
+  if (userStore.is_superuser) {
+    return [...baseNavigation, ...adminNavigation]
+  }
+  return baseNavigation
+})
+
+// 退出登录
+const handleLogout = async () => {
+  try {
+    await userStore.logOut()
+    ElMessage.success('退出登录成功')
+    router.push('/login')
+  } catch (error) {
+    console.error('退出登录失败:', error)
+    ElMessage.error('退出登录失败')
+  }
+}
 </script>

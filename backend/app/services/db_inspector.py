@@ -51,6 +51,9 @@ class DBInspector:
 
     @classmethod
     def get_engine(cls, ds: DataSource):
+        """
+        获取数据库引擎，配置连接池参数防止连接超时
+        """
         password = ""
         if ds.password_encrypted:
             try:
@@ -66,7 +69,34 @@ class DBInspector:
             ds.port or 0,
             ds.database_name or ""
         )
-        return create_engine(url)
+        
+        # 配置连接池参数
+        pool_config = {
+            "pool_size": 5,              # 连接池大小
+            "max_overflow": 10,          # 超过 pool_size 后最多创建的连接
+            "pool_timeout": 30,          # 获取连接的超时时间（秒）
+            "pool_recycle": 3600,        # 连接回收时间（1小时）
+            "pool_pre_ping": True,       # 执行前检查连接是否有效
+        }
+        
+        # MySQL 特殊配置
+        if ds.type == "mysql":
+            connect_args = {
+                "connect_timeout": 10,
+                "read_timeout": 30,
+                "write_timeout": 30,
+            }
+            return create_engine(url, **pool_config, connect_args=connect_args)
+        
+        # PostgreSQL 配置
+        elif ds.type == "postgresql":
+            connect_args = {
+                "connect_timeout": 10,
+            }
+            return create_engine(url, **pool_config, connect_args=connect_args)
+        
+        # 其他数据库
+        return create_engine(url, **pool_config)
 
     @classmethod
     def get_table_names(cls, ds: DataSource) -> list:

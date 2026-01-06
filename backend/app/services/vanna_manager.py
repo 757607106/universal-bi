@@ -567,8 +567,28 @@ class VannaManager:
                 # === Situation 3: Valid SQL ===
                 execution_steps.append("检测到有效 SQL")
                 
+                # 添加LIMIT子句防止查询过多数据导致超时
+                # 判断 SQL 是否已有 LIMIT 子句
+                sql_upper = cleaned_sql.upper()
+                has_limit = 'LIMIT' in sql_upper
+                
+                if not has_limit:
+                    # 在SQL末尾添加LIMIT
+                    cleaned_sql = cleaned_sql.rstrip(';').strip() + ' LIMIT 1000'
+                    execution_steps.append("自动添加 LIMIT 1000 防止过多数据")
+                elif has_limit:
+                    # 检查 LIMIT 值是否过大，如果超过 5000 则替换为 1000
+                    import re
+                    limit_match = re.search(r'LIMIT\s+(\d+)', sql_upper)
+                    if limit_match:
+                        limit_value = int(limit_match.group(1))
+                        if limit_value > 5000:
+                            # 替换为更小的值
+                            cleaned_sql = re.sub(r'LIMIT\s+\d+', 'LIMIT 1000', cleaned_sql, flags=re.IGNORECASE)
+                            execution_steps.append(f"将 LIMIT {limit_value} 调整为 LIMIT 1000 防止超时")
+                
                 try:
-                    # Execute the SQL
+                    # Execute the SQL with timeout protection
                     df = pd.read_sql(cleaned_sql, engine)
                     execution_steps.append(f"SQL 执行成功，返回 {len(df)} 行")
                     logger.info(f"SQL executed successfully: {len(df)} rows")
@@ -615,6 +635,34 @@ class VannaManager:
                     error_msg = str(e)
                     logger.warning(f"SQL execution failed: {error_msg}")
                     execution_steps.append(f"SQL 执行失败: {error_msg[:100]}")
+                    
+                    # 检查是否是连接超时错误
+                    is_timeout_error = '2013' in error_msg or 'Lost connection' in error_msg or 'timeout' in error_msg.lower()
+                    
+                    # 如果是超时错误，直接返回友好提示，不再重试
+                    if is_timeout_error:
+                        error_prompt = f"""查询执行超时了。用户的问题是: {question}
+
+请用中文礼貌地告诉用户：
+1. 查询耗时过长，可能是数据量较大
+2. 建议缩小时间范围，比如改为“最近 7 天”或“本周”
+3. 或者添加更具体的筛选条件
+
+保持简洁友好，不要提及技术细节。"""
+                        try:
+                            friendly_msg = vn.submit_prompt(error_prompt)
+                            execution_steps.append("检测到超时，生成优化建议")
+                        except:
+                            friendly_msg = "抱歉，查询耗时过长。建议您缩小时间范围（比如改为‘最近 7 天’或‘本周’），或者添加更具体的筛选条件。"
+                        
+                        return {
+                            "sql": cleaned_sql,
+                            "columns": None,
+                            "rows": None,
+                            "chart_type": "clarification",
+                            "answer_text": friendly_msg,
+                            "steps": execution_steps
+                        }
                     
                     # If not the last round, try SQL correction with LLM
                     if round_num < max_rounds:

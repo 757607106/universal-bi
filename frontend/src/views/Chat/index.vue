@@ -90,7 +90,7 @@
               <!-- Fake Loading Steps -->
               <div class="flex items-center gap-2 text-gray-500 dark:text-slate-400">
                 <el-icon class="is-loading"><Loading /></el-icon>
-                <span>{{ currentLoadingStep }}</span>
+                <span class="font-medium">{{ currentLoadingStep }}</span>
               </div>
               <div class="space-y-2 pl-6">
                 <div v-for="(step, idx) in loadingSteps" :key="idx" class="flex items-center gap-2 text-xs">
@@ -451,10 +451,12 @@ const loadingSteps = [
   '正在理解问题...',
   '检索业务术语...',
   '生成查询逻辑...',
-  '执行 SQL 查询...'
+  '执行 SQL 查询...',
+  '处理查询结果...'
 ]
 const currentLoadingStepIndex = ref(0)
 const currentLoadingStep = ref(loadingSteps[0])
+const loadingProgress = ref(0)  // 添加进度百分比
 let loadingInterval: number | null = null
 
 // Dashboard Dialog State
@@ -508,11 +510,14 @@ const handleCardClick = (card: typeof recommendCards[0]) => {
 const startLoadingAnimation = () => {
   currentLoadingStepIndex.value = 0
   currentLoadingStep.value = loadingSteps[0]
+  loadingProgress.value = 0
   
   loadingInterval = window.setInterval(() => {
     currentLoadingStepIndex.value = (currentLoadingStepIndex.value + 1) % loadingSteps.length
     currentLoadingStep.value = loadingSteps[currentLoadingStepIndex.value]
-  }, 1500)
+    // 更新进度条，最多到 90%，留 10% 给最终处理
+    loadingProgress.value = Math.min(90, (currentLoadingStepIndex.value / loadingSteps.length) * 100)
+  }, 2000)  // 每 2 秒更新一次
 }
 
 const stopLoadingAnimation = () => {
@@ -520,6 +525,7 @@ const stopLoadingAnimation = () => {
     clearInterval(loadingInterval)
     loadingInterval = null
   }
+  loadingProgress.value = 100  // 完成时设置为 100%
 }
 
 const scrollToBottom = async () => {
