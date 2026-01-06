@@ -1,0 +1,184 @@
+<template>
+  <div class="w-full h-full min-h-[400px]">
+    <!-- Table View -->
+    <div v-if="chartType === 'table'" class="h-full overflow-auto">
+      <el-table :data="data.rows" border stripe style="width: 100%" height="100%">
+        <el-table-column
+          v-for="col in data.columns"
+          :key="col"
+          :prop="col"
+          :label="col"
+          min-width="150"
+          show-overflow-tooltip
+        />
+      </el-table>
+    </div>
+
+    <!-- ECharts View -->
+    <v-chart
+      v-else
+      class="chart"
+      :option="chartOption"
+      autoresize
+    />
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed } from 'vue'
+import { use } from 'echarts/core'
+import { CanvasRenderer } from 'echarts/renderers'
+import { BarChart, LineChart, PieChart } from 'echarts/charts'
+import {
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+  TitleComponent,
+  DataZoomComponent
+} from 'echarts/components'
+import VChart from 'vue-echarts'
+
+// Register ECharts components
+use([
+  CanvasRenderer,
+  BarChart,
+  LineChart,
+  PieChart,
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+  TitleComponent,
+  DataZoomComponent
+])
+
+interface Props {
+  chartType: string
+  data: {
+    columns: string[]
+    rows: any[]
+  }
+}
+
+const props = defineProps<Props>()
+
+const chartOption = computed(() => {
+  if (props.chartType === 'table' || !props.data.columns.length) return {}
+
+  const xAxisCol = props.data.columns[0]
+  const yAxisCol = props.data.columns[1]
+
+  const xAxisData = props.data.rows.map(row => row[xAxisCol])
+  const seriesData = props.data.rows.map(row => row[yAxisCol])
+
+  const commonOption = {
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: {
+        type: 'shadow'
+      }
+    },
+    grid: {
+      left: '3%',
+      right: '4%',
+      bottom: '3%',
+      containLabel: true
+    },
+    legend: {
+      data: [yAxisCol]
+    }
+  }
+
+  if (props.chartType === 'bar') {
+    return {
+      ...commonOption,
+      xAxis: {
+        type: 'category',
+        data: xAxisData,
+        axisLabel: {
+          interval: 0,
+          rotate: 30
+        }
+      },
+      yAxis: {
+        type: 'value'
+      },
+      series: [
+        {
+          name: yAxisCol,
+          type: 'bar',
+          data: seriesData,
+          itemStyle: {
+            color: {
+              type: 'linear',
+              x: 0,
+              y: 0,
+              x2: 0,
+              y2: 1,
+              colorStops: [
+                { offset: 0, color: '#2dd4bf' }, // teal-400
+                { offset: 1, color: '#0f766e' }  // teal-700
+              ]
+            },
+            borderRadius: [4, 4, 0, 0]
+          },
+          emphasis: {
+            itemStyle: {
+              color: '#14b8a6'
+            }
+          }
+        }
+      ]
+    }
+  }
+
+  if (props.chartType === 'line') {
+    return {
+      ...commonOption,
+      xAxis: {
+        type: 'category',
+        data: xAxisData,
+        boundaryGap: false
+      },
+      yAxis: {
+        type: 'value'
+      },
+      series: [
+        {
+          name: yAxisCol,
+          type: 'line',
+          data: seriesData,
+          smooth: true,
+          symbol: 'circle',
+          symbolSize: 8,
+          itemStyle: {
+            color: '#3b82f6' // blue-500
+          },
+          areaStyle: {
+            color: {
+              type: 'linear',
+              x: 0,
+              y: 0,
+              x2: 0,
+              y2: 1,
+              colorStops: [
+                { offset: 0, color: 'rgba(59, 130, 246, 0.5)' },
+                { offset: 1, color: 'rgba(59, 130, 246, 0.01)' }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+
+  // Fallback for pie or others if needed
+  return {}
+})
+</script>
+
+<style scoped>
+.chart {
+  height: 100%;
+  width: 100%;
+}
+</style>

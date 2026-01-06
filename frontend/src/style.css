@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --el-color-primary: #409eff;
+    --el-color-primary-dark-2: #337ecc;
+  }
+
+  html {
+    font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+    font-weight: 400;
+  }
+
+  body {
+    margin: 0;
+    display: flex;
+    place-items: center;
+    min-width: 320px;
+    min-height: 100vh;
+  }
+
+  #app {
+    width: 100%;
+    margin: 0 auto;
+  }
+}
+
+@layer components {
+  .el-button {
+    border-radius: 6px;
+  }
+
+  .el-card {
+    border-radius: 8px;
+  }
+
+  .el-dialog {
+    border-radius: 12px;
+  }
+}
