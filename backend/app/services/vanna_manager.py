@@ -221,11 +221,35 @@ class VannaManager:
             db_session.commit()
 
     @staticmethod
+    def train_term(dataset_id: int, term: str, definition: str, db_session: Session):
+        """
+        Train a business term by adding it to Vanna's documentation memory.
+        Uses Legacy API for consistency with existing training approach.
+        """
+        try:
+            # Get Legacy Vanna instance
+            vn = VannaManager.get_legacy_vanna(dataset_id)
+            
+            # Format as documentation and train
+            doc_content = f"业务术语: {term}\n定义: {definition}"
+            vn.train(documentation=doc_content)
+            
+            logger.info(f"Successfully trained business term '{term}' for dataset {dataset_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to train business term '{term}': {e}")
+            raise ValueError(f"训练业务术语失败: {str(e)}")
+
+    @staticmethod
     async def generate_result(dataset_id: int, question: str, db_session: Session):
         """
-        Generate SQL and execute it to get results.
+        Generate SQL and execute it to get results with self-correction mechanism.
         Using Legacy API for better QA training compatibility.
+        Implements automatic SQL error correction inspired by DB-GPT Agent.
         """
+        max_retries = 2
+        execution_steps = []
+        
         # 1. Get Dataset with eager loading of datasource
         stmt = select(Dataset).options(selectinload(Dataset.datasource)).where(Dataset.id == dataset_id)
         result = db_session.execute(stmt)
@@ -241,56 +265,106 @@ class VannaManager:
         # 2. Get Legacy Vanna instance
         vn = VannaManager.get_legacy_vanna(dataset_id)
 
-        # 3. Generate SQL using Legacy API
+        # 3. Generate initial SQL using Legacy API
         try:
             # Legacy API's generate_sql method handles RAG automatically
-            sql = vn.generate_sql(question)
+            current_sql = vn.generate_sql(question)
             
             # Clean up SQL
-            if sql and isinstance(sql, str):
-                sql = sql.strip()
-                if sql.startswith("```"):
-                    sql = sql.split("\n", 1)[1] if "\n" in sql else sql
-                    if sql.endswith("```"):
-                        sql = sql.rsplit("\n", 1)[0]
-                sql = sql.replace("```sql", "").replace("```", "").strip()
-            else:
-                raise ValueError("Failed to generate SQL")
+            current_sql = VannaManager._clean_sql(current_sql)
+            execution_steps.append("生成初始 SQL 查询")
+            logger.info(f"Generated initial SQL: {current_sql}")
 
         except Exception as e:
             logger.error(f"SQL Generation failed: {e}")
+            execution_steps.append(f"SQL 生成失败: {str(e)}")
             raise ValueError(f"Failed to generate SQL: {str(e)}")
 
-        if not sql or "SELECT" not in sql.upper():
-             raise ValueError("AI failed to generate valid SQL query.")
+        if not current_sql or "SELECT" not in current_sql.upper():
+            execution_steps.append("AI 未能生成有效的 SELECT 查询")
+            raise ValueError("AI failed to generate valid SQL query.")
 
-        # 4. Execute Query
-        try:
-            engine = DBInspector.get_engine(dataset.datasource)
-            df = pd.read_sql(sql, engine)
-        except Exception as e:
-            logger.error(f"SQL Execution failed: {e}")
-            raise ValueError(f"SQL Execution Error: {str(e)}")
+        # 4. Execute Query with Self-Correction Loop
+        engine = DBInspector.get_engine(dataset.datasource)
+        df = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # Attempt to execute SQL
+                df = pd.read_sql(current_sql, engine)
+                execution_steps.append(f"SQL 执行成功 (尝试 {attempt + 1}/{max_retries + 1})")
+                logger.info(f"SQL executed successfully on attempt {attempt + 1}")
+                break  # Success, exit retry loop
+                
+            except Exception as e:
+                error_msg = str(e)
+                logger.warning(f"SQL Execution failed (Attempt {attempt + 1}/{max_retries + 1}): {error_msg}")
+                execution_steps.append(f"SQL 执行失败 (尝试 {attempt + 1}): {error_msg[:100]}")
+                
+                if attempt == max_retries:
+                    # Final attempt failed, give up
+                    execution_steps.append("达到最大重试次数，SQL 自愈失败")
+                    logger.error(f"SQL Execution failed after {max_retries + 1} attempts")
+                    raise ValueError(f"SQL Execution Error: {error_msg}")
+                
+                # Self-Correction: Ask AI to fix the SQL
+                try:
+                    execution_steps.append("尝试 AI 自动修复 SQL")
+                    
+                    # Build correction prompt with error context
+                    db_type = dataset.datasource.type.upper()
+                    correction_prompt = f"""The following SQL query failed on {db_type} database:
+
+SQL Query:
+{current_sql}
+
+Error Message:
+{error_msg}
+
+Please analyze the error and generate a corrected SQL query that:
+1. Fixes the syntax or logical error
+2. Works with {db_type} database
+3. Still answers the original question: "{question}"
+
+Generate ONLY the corrected SQL query, no explanations."""
+                    
+                    # Use submit_prompt for more control over correction
+                    corrected_sql = vn.submit_prompt(correction_prompt)
+                    corrected_sql = VannaManager._clean_sql(corrected_sql)
+                    
+                    if not corrected_sql or corrected_sql == current_sql:
+                        logger.warning("AI failed to provide a different SQL correction")
+                        execution_steps.append("AI 未能提供有效的修正方案")
+                        continue  # Skip to next attempt with same SQL
+                    
+                    current_sql = corrected_sql
+                    execution_steps.append(f"AI 已修正 SQL (尝试 {attempt + 2})")
+                    logger.info(f"AI corrected SQL: {current_sql}")
+                    
+                except Exception as correction_error:
+                    logger.error(f"SQL correction failed: {correction_error}")
+                    execution_steps.append(f"SQL 修正过程出错: {str(correction_error)[:100]}")
+                    # Continue with original SQL for next attempt
 
         # 5. Chart Type Inference
         chart_type = "table"
-        if not df.empty:
+        if df is not None and not df.empty:
             # Check for date/time in column names for line chart
             lower_cols = [str(c).lower() for c in df.columns]
             has_date = any(x in c for c in lower_cols for x in ['date', 'time', 'year', 'month', 'day'])
             
             if len(df.columns) == 2 and has_date:
                 # 2 columns + date usually implies time series
-                 chart_type = "line"
+                chart_type = "line"
             elif len(df.columns) >= 2:
-                 # Check for 1 string/date and 1 number for bar chart
+                # Check for 1 string/date and 1 number for bar chart
                 dtypes = df.dtypes.values
                 has_num = any(pd.api.types.is_numeric_dtype(t) for t in dtypes)
                 has_str = any(pd.api.types.is_string_dtype(t) or pd.api.types.is_object_dtype(t) or pd.api.types.is_datetime64_any_dtype(t) for t in dtypes)
                 if has_num and has_str:
-                     # If we already decided it's line, stick to line, otherwise bar
-                     if chart_type == "table":
-                         chart_type = "bar"
+                    # If we already decided it's line, stick to line, otherwise bar
+                    if chart_type == "table":
+                        chart_type = "bar"
 
         # 6. Formatting & Serialization
         def serialize(obj):
@@ -309,9 +383,31 @@ class VannaManager:
             cleaned_rows.append(new_row)
 
         return {
-            "sql": sql,
+            "sql": current_sql,
             "columns": df.columns.tolist(),
             "rows": cleaned_rows,
             "chart_type": chart_type,
-            "summary": None 
+            "summary": None,
+            "steps": execution_steps  # Include execution steps for debugging
         }
+
+    @staticmethod
+    def _clean_sql(sql: str) -> str:
+        """
+        Clean and normalize SQL string from AI output.
+        Removes markdown code blocks and extra whitespace.
+        """
+        if not sql or not isinstance(sql, str):
+            raise ValueError("Invalid SQL output")
+        
+        sql = sql.strip()
+        
+        # Remove markdown code blocks
+        if sql.startswith("```"):
+            sql = sql.split("\n", 1)[1] if "\n" in sql else sql
+            if sql.endswith("```"):
+                sql = sql.rsplit("\n", 1)[0]
+        
+        sql = sql.replace("```sql", "").replace("```", "").strip()
+        
+        return sql

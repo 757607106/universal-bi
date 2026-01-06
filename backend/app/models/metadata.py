@@ -30,6 +30,7 @@ class Dataset(Base):
     last_trained_at = Column(DateTime, nullable=True)
     
     datasource = relationship("DataSource", back_populates="datasets")
+    business_terms = relationship("BusinessTerm", back_populates="dataset", cascade="all, delete-orphan")
 
 
 class Dashboard(Base):
@@ -58,3 +59,15 @@ class DashboardCard(Base):
     
     dashboard = relationship("Dashboard", back_populates="cards")
     dataset = relationship("Dataset")
+
+
+class BusinessTerm(Base):
+    __tablename__ = "business_terms"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    term = Column(String, index=True)  # 术语名称，如 "高净值客户"
+    definition = Column(Text)  # 定义，如 "年消费额 > 100w 的客户"
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    dataset = relationship("Dataset", back_populates="business_terms")

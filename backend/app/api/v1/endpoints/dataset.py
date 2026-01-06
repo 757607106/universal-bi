@@ -3,8 +3,11 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.db.session import get_db, SessionLocal
-from app.models.metadata import Dataset, DataSource
-from app.schemas.dataset import DatasetCreate, DatasetResponse, DatasetUpdateTables
+from app.models.metadata import Dataset, DataSource, BusinessTerm
+from app.schemas.dataset import (
+    DatasetCreate, DatasetResponse, DatasetUpdateTables,
+    BusinessTermCreate, BusinessTermResponse
+)
 from app.services.vanna_manager import VannaManager
 
 router = APIRouter()
@@ -110,3 +113,81 @@ def train_dataset(
     background_tasks.add_task(run_training_task, id, dataset.schema_config)
     
     return {"message": "训练已开始"}
+
+
+# Business Term Management Endpoints
+@router.post("/{id}/terms", response_model=BusinessTermResponse)
+def add_business_term(
+    id: int,
+    term_in: BusinessTermCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Add a business term to a dataset and train it in Vanna.
+    """
+    # Verify dataset exists
+    dataset = db.query(Dataset).filter(Dataset.id == id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # Create business term in database
+    business_term = BusinessTerm(
+        dataset_id=id,
+        term=term_in.term,
+        definition=term_in.definition
+    )
+    db.add(business_term)
+    db.commit()
+    db.refresh(business_term)
+    
+    # Train the term in Vanna
+    try:
+        VannaManager.train_term(
+            dataset_id=id,
+            term=term_in.term,
+            definition=term_in.definition,
+            db_session=db
+        )
+    except Exception as e:
+        # Rollback database if Vanna training fails
+        db.delete(business_term)
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"训练术语失败: {str(e)}")
+    
+    return business_term
+
+
+@router.get("/{id}/terms", response_model=List[BusinessTermResponse])
+def list_business_terms(
+    id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Get all business terms for a dataset.
+    """
+    dataset = db.query(Dataset).filter(Dataset.id == id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    terms = db.query(BusinessTerm).filter(BusinessTerm.dataset_id == id).all()
+    return terms
+
+
+@router.delete("/terms/{term_id}")
+def delete_business_term(
+    term_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a business term from database.
+    Note: Vanna Legacy API does not provide a direct way to remove specific training data,
+    so this only removes from database. The term will remain in the vector store.
+    """
+    term = db.query(BusinessTerm).filter(BusinessTerm.id == term_id).first()
+    if not term:
+        raise HTTPException(status_code=404, detail="Business term not found")
+    
+    db.delete(term)
+    db.commit()
+    
+    return {"message": "术语已删除（注：向量库中的训练数据仍保留）"}

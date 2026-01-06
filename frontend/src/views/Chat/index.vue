@@ -58,9 +58,22 @@
                 : 'bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-tl-none'
             ]"
           >
-            <div v-if="msg.loading" class="flex items-center gap-2">
-              <el-icon class="is-loading"><Loading /></el-icon>
-              <span>正在思考并查询数据...</span>
+            <div v-if="msg.loading" class="space-y-3">
+              <!-- Fake Loading Steps -->
+              <div class="flex items-center gap-2 text-gray-600 dark:text-gray-400">
+                <el-icon class="is-loading"><Loading /></el-icon>
+                <span>{{ currentLoadingStep }}</span>
+              </div>
+              <div class="space-y-2 pl-6">
+                <div v-for="(step, idx) in loadingSteps" :key="idx" class="flex items-center gap-2 text-xs">
+                  <el-icon v-if="idx < currentLoadingStepIndex" class="text-green-500"><Check /></el-icon>
+                  <el-icon v-else-if="idx === currentLoadingStepIndex" class="is-loading text-blue-500"><Loading /></el-icon>
+                  <el-icon v-else class="text-gray-300"><Clock /></el-icon>
+                  <span :class="idx <= currentLoadingStepIndex ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400'">
+                    {{ step }}
+                  </span>
+                </div>
+              </div>
             </div>
             
             <div v-else>
@@ -71,6 +84,41 @@
 
               <!-- Normal Content -->
               <div v-else class="space-y-4">
+                <!-- Thinking Steps (Real) -->
+                <div v-if="msg.steps && msg.steps.length > 0" class="mb-4">
+                  <el-collapse class="thinking-steps-collapse">
+                    <el-collapse-item :name="1">
+                      <template #title>
+                        <div class="flex items-center gap-2 text-xs">
+                          <el-icon class="text-blue-500"><Operation /></el-icon>
+                          <span class="font-medium">
+                            {{ getStepsSummary(msg.steps) }}
+                          </span>
+                        </div>
+                      </template>
+                      <div class="space-y-2 text-xs">
+                        <div
+                          v-for="(step, idx) in msg.steps"
+                          :key="idx"
+                          class="flex items-start gap-2 py-1"
+                        >
+                          <el-icon
+                            :class="getStepIconClass(step)"
+                            class="mt-0.5 flex-shrink-0"
+                          >
+                            <component :is="getStepIcon(step)" />
+                          </el-icon>
+                          <span
+                            :class="getStepTextClass(step)"
+                          >
+                            {{ step }}
+                          </span>
+                        </div>
+                      </div>
+                    </el-collapse-item>
+                  </el-collapse>
+                </div>
+
                 <p v-if="msg.content" class="whitespace-pre-wrap">{{ msg.content }}</p>
                 
                 <!-- Chart -->
@@ -177,7 +225,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   ChatDotRound,
@@ -187,7 +235,12 @@ import {
   Search,
   Loading,
   Warning,
-  DocumentAdd
+  DocumentAdd,
+  Check,
+  Clock,
+  Operation,
+  CircleCheck,
+  WarningFilled
 } from '@element-plus/icons-vue'
 import { getDatasetList, type Dataset } from '@/api/dataset'
 import { sendChat } from '@/api/chat'
@@ -204,6 +257,7 @@ interface Message {
   error?: boolean
   question?: string  // 保存用户问题
   datasetId?: number  // 保存数据集ID
+  steps?: string[]  // 执行步骤
 }
 
 const currentDatasetId = ref<number | undefined>(undefined)
@@ -213,6 +267,17 @@ const messages = ref<Message[]>([])
 const inputMessage = ref('')
 const sending = ref(false)
 const chatContainer = ref<HTMLElement | null>(null)
+
+// Loading Animation State
+const loadingSteps = [
+  '正在理解问题...',
+  '检索业务术语...',
+  '生成查询逻辑...',
+  '执行 SQL 查询...'
+]
+const currentLoadingStepIndex = ref(0)
+const currentLoadingStep = ref(loadingSteps[0])
+let loadingInterval: number | null = null
 
 // Dashboard Dialog State
 const saveToDashboardDialog = ref(false)
@@ -239,6 +304,29 @@ onMounted(async () => {
     loadingDatasets.value = false
   }
 })
+
+onUnmounted(() => {
+  if (loadingInterval) {
+    clearInterval(loadingInterval)
+  }
+})
+
+const startLoadingAnimation = () => {
+  currentLoadingStepIndex.value = 0
+  currentLoadingStep.value = loadingSteps[0]
+  
+  loadingInterval = window.setInterval(() => {
+    currentLoadingStepIndex.value = (currentLoadingStepIndex.value + 1) % loadingSteps.length
+    currentLoadingStep.value = loadingSteps[currentLoadingStepIndex.value]
+  }, 1500)
+}
+
+const stopLoadingAnimation = () => {
+  if (loadingInterval) {
+    clearInterval(loadingInterval)
+    loadingInterval = null
+  }
+}
 
 const scrollToBottom = async () => {
   await nextTick()
@@ -269,6 +357,7 @@ const handleSend = async () => {
   const aiMsgIndex = messages.value.length
   messages.value.push({ type: 'ai', loading: true })
   sending.value = true
+  startLoadingAnimation()  // 启动加载动画
   scrollToBottom()
 
   try {
@@ -287,7 +376,8 @@ const handleSend = async () => {
       chartData: res.data,
       chartType: res.chart_type,
       question: question,  // 保存原始问题
-      datasetId: currentDatasetId.value  // 保存数据集ID
+      datasetId: currentDatasetId.value,  // 保存数据集ID
+      steps: res.steps  // 保存执行步骤
     }
   } catch (error: any) {
     console.error(error)
@@ -298,8 +388,51 @@ const handleSend = async () => {
       content: error.response?.data?.detail || '抱歉，处理您的问题时出现了错误。请稍后重试。'
     }
   } finally {
+    stopLoadingAnimation()  // 停止加载动画
     sending.value = false
     scrollToBottom()
+  }
+}
+
+// Step Analysis Helpers
+const getStepsSummary = (steps: string[]) => {
+  const hasError = steps.some(s => s.includes('失败') || s.includes('出错'))
+  const hasCorrection = steps.some(s => s.includes('修正') || s.includes('自动修复'))
+  
+  if (hasCorrection) {
+    return 'AI 已自动修正 SQL 并生成结果 ✨'
+  } else if (hasError) {
+    return '查看执行详情 (含警告)'
+  } else {
+    return '查看执行步骤 ✓'
+  }
+}
+
+const getStepIcon = (step: string) => {
+  if (step.includes('失败') || step.includes('出错')) {
+    return WarningFilled
+  } else if (step.includes('成功') || step.includes('已修正')) {
+    return CircleCheck
+  } else {
+    return Clock
+  }
+}
+
+const getStepIconClass = (step: string) => {
+  if (step.includes('失败') || step.includes('出错')) {
+    return 'text-orange-500'
+  } else if (step.includes('成功') || step.includes('已修正')) {
+    return 'text-green-500'
+  } else {
+    return 'text-blue-500'
+  }
+}
+
+const getStepTextClass = (step: string) => {
+  if (step.includes('失败') || step.includes('出错')) {
+    return 'text-gray-600 dark:text-gray-400'
+  } else {
+    return 'text-gray-700 dark:text-gray-300'
   }
 }
 
@@ -383,3 +516,37 @@ const handleCancelSave = () => {
   currentSavingMessage.value = null
 }
 </script>
+
+<style scoped>
+/* Thinking Steps Collapse Custom Styling */
+.thinking-steps-collapse :deep(.el-collapse-item__header) {
+  padding: 8px 12px;
+  background-color: #f9fafb;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  font-size: 13px;
+}
+
+.dark .thinking-steps-collapse :deep(.el-collapse-item__header) {
+  background-color: #1f2937;
+  border-color: #374151;
+}
+
+.thinking-steps-collapse :deep(.el-collapse-item__content) {
+  padding: 12px 12px 8px 12px;
+  background-color: #fefefe;
+  border: 1px solid #e5e7eb;
+  border-top: none;
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+.dark .thinking-steps-collapse :deep(.el-collapse-item__content) {
+  background-color: #111827;
+  border-color: #374151;
+}
+
+.thinking-steps-collapse :deep(.el-collapse-item__wrap) {
+  border: none;
+}
+</style>

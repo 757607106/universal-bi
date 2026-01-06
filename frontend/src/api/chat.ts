@@ -17,6 +17,7 @@ export interface ChatResponse {
     rows: any[]
   }
   chart_type: string
+  steps?: string[]  // 执行步骤记录
 }
 
 export const sendChat = async (data: { dataset_id: number, question: string }) => {
@@ -29,6 +30,7 @@ export const sendChat = async (data: { dataset_id: number, question: string }) =
       columns: response.data.columns,
       rows: response.data.rows
     },
-    chart_type: response.data.chart_type
+    chart_type: response.data.chart_type,
+    steps: response.data.steps || []  // 包含执行步骤
   } as ChatResponse
 }

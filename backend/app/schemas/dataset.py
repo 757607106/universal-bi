@@ -21,3 +21,20 @@ class DatasetResponse(DatasetBase):
 
     class Config:
         from_attributes = True
+
+
+# Business Term Schemas
+class BusinessTermBase(BaseModel):
+    term: str
+    definition: str
+
+class BusinessTermCreate(BusinessTermBase):
+    pass
+
+class BusinessTermResponse(BusinessTermBase):
+    id: int
+    dataset_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
