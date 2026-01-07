@@ -46,6 +46,22 @@ class VannaLegacy(ChromaDB_VectorStore, OpenAI_Chat):
     使用传入的 chroma_client 避免重复创建导致的冲突
     """
     def __init__(self, config=None, chroma_client=None):
+        # 保存 config 引用，供父类方法使用
+        self.config = config or {}
+        
+        # === VannaBase 需要的属性 ===
+        self.run_sql_is_set = False
+        self.static_documentation = ""
+        self.dialect = self.config.get("dialect", "SQL")
+        self.language = self.config.get("language", None)
+        self.max_tokens = self.config.get("max_tokens", 14000)
+        
+        # === ChromaDB_VectorStore 需要的属性 ===
+        n_results = config.get('n_results', 10) if config else 10
+        self.n_results_sql = config.get('n_results_sql', n_results) if config else n_results
+        self.n_results_documentation = config.get('n_results_documentation', n_results) if config else n_results
+        self.n_results_ddl = config.get('n_results_ddl', n_results) if config else n_results
+        
         # 如果传入了 chroma_client，直接使用而不调用父类的 __init__
         if chroma_client is not None:
             import chromadb.utils.embedding_functions as embedding_functions
