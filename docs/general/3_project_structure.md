@@ -1,6 +1,6 @@
 # Universal BI 项目完整结构文档
 
-> 最后更新：2026-01-07  
+> 最后更新：2026-01-07 (v1.1)  
 > 本文档详细描述了 Universal BI 项目的完整目录结构、各模块职责及关键技术实现。
 
 ## 📁 根目录结构
@@ -108,6 +108,9 @@ backend/
 
 **`vanna_manager.py` - Vanna AI 核心服务**
 - **VannaLegacy 类**：封装 Vanna Legacy API，支持 DashScope 自定义端点
+  - **关键修复 (2026-01-07)**：修复自定义 `chroma_client` 初始化时缺失父类属性导致的 AttributeError
+  - 正确初始化 `VannaBase` 属性：`config`, `dialect`, `language`, `max_tokens`, `run_sql_is_set`, `static_documentation`
+  - 正确初始化 `ChromaDB_VectorStore` 属性：`n_results_sql`, `n_results_documentation`, `n_results_ddl`
 - **VannaManager 类**：
   - `get_agent()` - 获取 Vanna 2.0 Agent（用于训练）
   - `get_legacy_vanna()` - 获取 Legacy Vanna 实例（用于 SQL 生成）
@@ -339,4 +342,4 @@ Routes:
 ---
 
 > **维护说明**：本文档需要随项目结构变化及时更新。  
-> **最后更新**: 2026-01-07 - 添加可视化建模模块、连线功能、SQL去重相关内容
+> **最后更新**: 2026-01-07 (v1.1) - 添加可视化建模模块、连线功能、SQL去重相关内容；记录 VannaLegacy 初始化 bug 修复

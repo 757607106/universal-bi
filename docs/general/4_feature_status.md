@@ -1,6 +1,6 @@
 # Universal BI - 功能需求与完成状态文档
 
-> **文档版本**: v1.4  
+> **文档版本**: v1.5  
 > **最后更新**: 2026-01-07  
 > **目的**: 清晰记录项目需求与实现状态，用于功能追踪和任务规划
 
@@ -13,7 +13,7 @@
 | 数据源管理 | ✅ 100% | ✅ 完成 | ✅ 完成 | 全功能可用，多租户隔离 |
 | 语义建模层 (Dataset) | ✅ 100% | ✅ 完成 | ✅ 完成 | 训练流程完善，多租户隔离 |
 | **可视化建模** | **✅ 100%** | **✅ 完成** | **✅ 完成** | **手动/AI 连线、宽表生成** ✨ |
-| 智能问答 (ChatBI) | ✅ 100% | ✅ 完成 | ✅ 完成 | AI 生成优化、**反馈闭环** ✨ |
+| 智能问答 (ChatBI) | ✅ 100% | ✅ 完成 | ✅ 完成 | AI 生成优化、**反馈闭环**、Bug 修复 ✨ |
 | 仪表盘 (Dashboard) | ✅ 100% | ✅ 完成 | ✅ 完成 | CRUD 全覆盖 |
 | 用户认证 (SaaS) | ✅ 100% | ✅ 完成 | ✅ 完成 | JWT, 登录/注册/退出 |
 | 权限管理 (RBAC) | ✅ 100% | ✅ 完成 | ✅ 完成 | 超级管理员，用户状态管理 |
@@ -116,6 +116,16 @@
 - **多轮推理**：支持澄清机制，AI 自动判断是否需要补充信息。
 - **分析师 Agent**：自动生成业务洞察（数据摘要 + 统计分析 + Markdown 展示）。
 - **模型**：Qwen-Max (配置于 `core/config.py`)。
+
+#### 🐛 最近修复的问题
+- **VannaLegacy 初始化 Bug** (2026-01-07)：
+  - **问题**：使用自定义 `chroma_client` 初始化时，跳过父类 `__init__` 导致缺失必要属性
+  - **错误**：`'VannaLegacy' object has no attribute 'config'` / `'n_results_sql'` / `'dialect'`
+  - **原因**：未设置 `VannaBase` 和 `ChromaDB_VectorStore` 需要的实例属性
+  - **修复**：在 `VannaLegacy.__init__` 中补全所有父类属性：
+    - VannaBase 属性：`config`, `dialect`, `language`, `max_tokens`, `run_sql_is_set`, `static_documentation`
+    - ChromaDB_VectorStore 属性：`n_results_sql`, `n_results_documentation`, `n_results_ddl`
+  - **影响范围**：SQL 生成流程 (`generate_sql()` 方法)
 
 **实现文件**:
 - 后端: `endpoints/chat.py`, `services/vanna_manager.py`
