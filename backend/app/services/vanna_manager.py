@@ -3,16 +3,17 @@ from sqlalchemy import select, inspect
 from app.models.metadata import Dataset, TrainingLog
 from app.core.config import settings
 from app.core.redis import redis_service, generate_cache_key
+from app.core.logger import get_logger
 from app.services.db_inspector import DBInspector
 from datetime import datetime, date
 from decimal import Decimal
-import logging
 import re
 import asyncio
 import pandas as pd
 import uuid
 import json
 import hashlib
+import time
 from openai import OpenAI as OpenAIClient
 
 # Vanna 2.0 Imports
@@ -29,7 +30,7 @@ from vanna.integrations.chromadb import ChromaAgentMemory
 from vanna.legacy.openai import OpenAI_Chat
 from vanna.legacy.chromadb import ChromaDB_VectorStore
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # Custom Exception for Training Control
@@ -938,17 +939,34 @@ class VannaManager:
                   Includes 'is_cached' flag when result is from cache
         """
         execution_steps = []
+        start_time = time.perf_counter()  # 🔥 开始计时
+        
+        # 记录请求开始
+        logger.info(
+            "SQL generation started",
+            dataset_id=dataset_id,
+            question=question[:100],  # 截断问题长度
+            question_length=len(question),
+            use_cache=use_cache
+        )
         
         # === Step 0: SQL Cache Check ===
         # 缓存策略：先检查 SQL 缓存，命中后重新执行 SQL 获取最新数据
         if use_cache:
+            cache_check_start = time.perf_counter()
             sql_cache_key = generate_cache_key("bi:sql_cache", dataset_id, question)
             
             try:
                 cached_sql = await redis_service.get(sql_cache_key)
                 if cached_sql:
-                    logger.info(f"⚡ SQL缓存命中 for dataset {dataset_id}, question: {question[:50]}...")
-                    execution_steps.append("⚡ SQL缓存命中")
+                    cache_check_time = (time.perf_counter() - cache_check_start) * 1000
+                    logger.info(
+                        "SQL cache hit",
+                        dataset_id=dataset_id,
+                        cache_key=sql_cache_key[:50],
+                        cache_check_time_ms=round(cache_check_time, 2)
+                    )
+                    execution_steps.append("SQL缓存命中")
                     
                     # 关键点：拿到缓存的 SQL 后，重新执行查询获取最新数据
                     try:
@@ -959,13 +977,27 @@ class VannaManager:
                         
                         if not dataset or not dataset.datasource:
                             # 如果 dataset 或 datasource 不存在，这个缓存已经无效了
-                            logger.warning(f"Dataset {dataset_id} or datasource not found, invalidating SQL cache")
+                            logger.warning(
+                                "缓存失效",
+                                dataset_id=dataset_id,
+                                reason="dataset or datasource not found"
+                            )
                             await redis_service.delete(sql_cache_key)
                             execution_steps.append("缓存已失效，进入常规流程")
                         else:
                             # 重新执行 SQL 查询
+                            sql_exec_start = time.perf_counter()
                             engine = DBInspector.get_engine(dataset.datasource)
                             df = pd.read_sql(cached_sql, engine)
+                            sql_exec_time = (time.perf_counter() - sql_exec_start) * 1000
+                            
+                            logger.info(
+                                "SQL executed from cache",
+                                dataset_id=dataset_id,
+                                sql=cached_sql[:200],  # 截断 SQL
+                                row_count=len(df),
+                                sql_exec_time_ms=round(sql_exec_time, 2)
+                            )
                             execution_steps.append(f"重新执行查询，返回 {len(df)} 行")
                             
                             # 推断图表类型
@@ -973,6 +1005,36 @@ class VannaManager:
                             
                             # 序列化数据
                             cleaned_rows = VannaManager._serialize_dataframe(df)
+                            
+                            # 生成业务分析（即使是缓存的 SQL，也生成最新的分析）
+                            insight = None
+                            if len(df) > 0:
+                                try:
+                                    execution_steps.append("正在生成业务分析...")
+                                    insight = VannaManager.generate_data_insight(
+                                        question=question,
+                                        sql=cached_sql,
+                                        df=df,
+                                        dataset_id=dataset_id
+                                    )
+                                    execution_steps.append("业务分析生成完成")
+                                    logger.info(f"Business insight generated from cache: {insight[:50]}...")
+                                except Exception as insight_error:
+                                    logger.warning(
+                                        "业务分析生成失败",
+                                        dataset_id=dataset_id,
+                                        error=str(insight_error)
+                                    )
+                                    execution_steps.append("业务分析生成失败")
+                                    insight = None
+                            
+                            total_time = (time.perf_counter() - start_time) * 1000
+                            logger.info(
+                                "Request completed (from cache)",
+                                dataset_id=dataset_id,
+                                total_time_ms=round(total_time, 2),
+                                from_cache=True
+                            )
                             
                             return {
                                 "sql": cached_sql,
@@ -982,15 +1044,21 @@ class VannaManager:
                                 "summary": None,
                                 "steps": execution_steps,
                                 "is_cached": True,  # 标记从缓存读取
-                                "from_cache": True  # 兼容旧字段
+                                "from_cache": True,  # 兼容旧字段
+                                "insight": insight  # 新增业务分析
                             }
                     except Exception as e:
-                        logger.warning(f"Cached SQL execution failed: {e}. Proceeding with full generation.")
+                        logger.warning(
+                            "缓存 SQL 执行失败",
+                            dataset_id=dataset_id,
+                            error=str(e)[:200],
+                            cached_sql=cached_sql[:100]
+                        )
                         execution_steps.append(f"缓存 SQL 执行失败: {str(e)[:50]}，进入常规流程")
                         # 删除无效缓存
                         await redis_service.delete(sql_cache_key)
                 else:
-                    logger.debug(f"SQL cache miss for dataset {dataset_id}")
+                    logger.debug("缓存未命中", dataset_id=dataset_id)
                     execution_steps.append("SQL缓存未命中")
             except Exception as e:
                 logger.warning(f"SQL cache read failed: {e}. Proceeding without cache.")
@@ -1030,12 +1098,33 @@ class VannaManager:
             execution_steps.append("初始化完成")
 
             # === Step B: Initial Generation ===
+            llm_gen_start = time.perf_counter()
             try:
                 llm_response = vn.generate_sql(question + " (请用中文回答)")
+                llm_gen_time = (time.perf_counter() - llm_gen_start) * 1000
+                
+                logger.info(
+                    "LLM SQL generation completed",
+                    dataset_id=dataset_id,
+                    llm_gen_time_ms=round(llm_gen_time, 2),
+                    response_length=len(llm_response)
+                )
                 execution_steps.append("LLM 初始响应生成")
-                logger.info(f"Initial LLM response: {llm_response}")
+                logger.debug(
+                    "LLM 响应内容",
+                    dataset_id=dataset_id,
+                    response=llm_response[:500]  # 记录前 500 个字符
+                )
             except Exception as e:
-                logger.error(f"Initial SQL generation failed: {e}")
+                llm_gen_time = (time.perf_counter() - llm_gen_start) * 1000
+                logger.error(
+                    "LLM generation failed",
+                    dataset_id=dataset_id,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                    llm_gen_time_ms=round(llm_gen_time, 2),
+                    exc_info=True
+                )
                 # Use LLM to generate friendly error message
                 try:
                     error_prompt = f"""系统在尝试生成 SQL 时报错了: {str(e)}
@@ -1069,11 +1158,25 @@ class VannaManager:
                 
                 if intermediate_sql:
                     execution_steps.append(f"检测到中间 SQL: {intermediate_sql[:100]}")
-                    logger.info(f"Detected intermediate SQL: {intermediate_sql}")
+                    logger.info(
+                        "Intermediate SQL detected",
+                        dataset_id=dataset_id,
+                        round_num=round_num,
+                        intermediate_sql=intermediate_sql[:200]
+                    )
                     
                     try:
                         # Execute intermediate SQL
+                        intermediate_exec_start = time.perf_counter()
                         df_intermediate = pd.read_sql(intermediate_sql, engine)
+                        intermediate_exec_time = (time.perf_counter() - intermediate_exec_start) * 1000
+                        
+                        logger.info(
+                            "Intermediate SQL executed",
+                            dataset_id=dataset_id,
+                            row_count=len(df_intermediate),
+                            exec_time_ms=round(intermediate_exec_time, 2)
+                        )
                         execution_steps.append(f"中间 SQL 执行成功，获取 {len(df_intermediate)} 行")
                         
                         # Extract distinct values
@@ -1156,9 +1259,19 @@ class VannaManager:
                 
                 try:
                     # Execute the SQL with timeout protection
+                    final_exec_start = time.perf_counter()
                     df = pd.read_sql(cleaned_sql, engine)
+                    final_exec_time = (time.perf_counter() - final_exec_start) * 1000
+                    
+                    logger.info(
+                        "SQL executed successfully",
+                        dataset_id=dataset_id,
+                        sql=cleaned_sql[:200],  # 截断 SQL
+                        row_count=len(df),
+                        column_count=len(df.columns),
+                        sql_exec_time_ms=round(final_exec_time, 2)
+                    )
                     execution_steps.append(f"SQL 执行成功，返回 {len(df)} 行")
-                    logger.info(f"SQL executed successfully: {len(df)} rows")
                     
                     # Chart Type Inference
                     chart_type = VannaManager._infer_chart_type(df)
@@ -1204,17 +1317,42 @@ class VannaManager:
                             sql_cache_key = generate_cache_key("bi:sql_cache", dataset_id, question)
                             # 24小时 = 86400 秒
                             await redis_service.set(sql_cache_key, cleaned_sql, expire=86400)
-                            logger.info(f"✅ SQL 已缓存 for dataset {dataset_id}, TTL: 24h")
+                            logger.info(
+                                "SQL cached",
+                                dataset_id=dataset_id,
+                                cache_key=sql_cache_key[:50],
+                                ttl_hours=24
+                            )
                             execution_steps.append("SQL已缓存 (TTL: 24h)")
                         except Exception as e:
-                            logger.warning(f"SQL cache write failed: {e}.")
+                            logger.warning(
+                                "缓存写入失败",
+                                dataset_id=dataset_id,
+                                error=str(e)
+                            )
                             execution_steps.append(f"SQL缓存写入失败: {str(e)[:50]}")
+                    
+                    # 记录总耗时
+                    total_time = (time.perf_counter() - start_time) * 1000
+                    logger.info(
+                        "Request completed",
+                        dataset_id=dataset_id,
+                        total_time_ms=round(total_time, 2),
+                        from_cache=False
+                    )
                     
                     return result
                     
                 except Exception as e:
                     error_msg = str(e)
-                    logger.warning(f"SQL execution failed: {error_msg}")
+                    logger.error(
+                        "SQL execution failed",
+                        dataset_id=dataset_id,
+                        sql=cleaned_sql[:200],
+                        error=error_msg[:200],
+                        error_type=type(e).__name__,
+                        exc_info=True
+                    )
                     execution_steps.append(f"SQL 执行失败: {error_msg[:100]}")
                     
                     # 检查是否是连接超时错误

@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref } from "vue";
 import { getRegister } from "@/api/user";
-import { registerRules } from "../utils/rule";
-import { User, Lock, Message } from "@element-plus/icons-vue";
+import { User, Lock, Message, OfficeBuilding } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 
 const emit = defineEmits(["switch-to-login"]);
@@ -11,11 +10,34 @@ const formRef = ref();
 const loading = ref(false);
 
 const registerForm = reactive({
+  username: "",
   email: "",
+  company: "",
   full_name: "",
   password: "",
   repeatPassword: ""
 });
+
+const registerRules = {
+  username: [
+    { required: true, message: "请输入账号", trigger: "blur" },
+    { min: 3, max: 50, message: "账号长度在3-50位之间", trigger: "blur" }
+  ],
+  email: [
+    { required: true, message: "请输入邮箱", trigger: "blur" },
+    { type: "email" as const, message: "请输入有效的邮箱地址", trigger: "blur" }
+  ],
+  company: [
+    { required: true, message: "请输入公司名称", trigger: "blur" }
+  ],
+  password: [
+    { required: true, message: "请输入密码", trigger: "blur" },
+    { min: 6, message: "密码长度至少6位", trigger: "blur" }
+  ],
+  repeatPassword: [
+    { required: true, message: "请确认密码", trigger: "blur" }
+  ]
+};
 
 const handleRegister = async () => {
   if (!formRef.value) return;
@@ -31,8 +53,10 @@ const handleRegister = async () => {
       loading.value = true;
       try {
         await getRegister({
+          username: registerForm.username,
           email: registerForm.email,
           password: registerForm.password,
+          company: registerForm.company || undefined,
           full_name: registerForm.full_name || undefined
         });
         
@@ -68,6 +92,15 @@ const handleBackToLogin = () => {
       class="register-form"
       @keyup.enter="handleRegister"
     >
+      <el-form-item prop="username">
+        <el-input
+          v-model="registerForm.username"
+          placeholder="账号"
+          :prefix-icon="User"
+          size="large"
+        />
+      </el-form-item>
+
       <el-form-item prop="email">
         <el-input
           v-model="registerForm.email"
@@ -77,10 +110,19 @@ const handleBackToLogin = () => {
         />
       </el-form-item>
 
+      <el-form-item prop="company">
+        <el-input
+          v-model="registerForm.company"
+          placeholder="公司名称"
+          :prefix-icon="OfficeBuilding"
+          size="large"
+        />
+      </el-form-item>
+
       <el-form-item prop="full_name">
         <el-input
           v-model="registerForm.full_name"
-          placeholder="全名（可选）"
+          placeholder="姓名（可选）"
           :prefix-icon="User"
           size="large"
         />

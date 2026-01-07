@@ -21,14 +21,15 @@ def login_access_token(
 ) -> Any:
     """
     OAuth2 compatible token login, get an access token for future requests
+    通过账号密码登录
     """
-    user = db.query(User).filter(User.email == form_data.username).first()
+    user = db.query(User).filter(User.username == form_data.username).first()
     
     # 先检查用户是否存在
     if not user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="该邮箱未注册，请先注册账号",
+            detail="账号不存在，请先注册",
         )
     
     # 再检查密码是否正确
@@ -47,7 +48,7 @@ def login_access_token(
     
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = security.create_access_token(
-        subject=user.email, expires_delta=access_token_expires
+        subject=user.username, expires_delta=access_token_expires
     )
     return {
         "access_token": access_token,
@@ -64,29 +65,41 @@ def register_user(
     Create new user.
     
     参数:
+    - **username**: 登录账号 (必填，3-50位)
     - **email**: 用户邮箱 (必填，需要有效邮箱格式)
     - **password**: 用户密码 (必填，至少6位)
     - **full_name**: 用户全名 (可选)
+    - **company**: 公司信息 (可选)
     
     返回:
     - 创建成功的用户信息（不包含密码）
     """
-    # 1. 检查 email 是否已存在
+    # 1. 检查 username 是否已存在
+    user = db.query(User).filter(User.username == user_in.username).first()
+    if user:
+        raise HTTPException(
+            status_code=400,
+            detail="该账号已被注册",
+        )
+    
+    # 2. 检查 email 是否已存在
     user = db.query(User).filter(User.email == user_in.email).first()
     if user:
         raise HTTPException(
             status_code=400,
-            detail="Email already registered",
+            detail="该邮箱已被注册",
         )
     
-    # 2. 对密码进行 Hash 加密
+    # 3. 对密码进行 Hash 加密
     hashed_password = security.get_password_hash(user_in.password)
     
-    # 3. 创建 User 对象并存入数据库
+    # 4. 创建 User 对象并存入数据库
     user = User(
+        username=user_in.username,
         email=user_in.email,
         hashed_password=hashed_password,
         full_name=user_in.full_name,
+        company=user_in.company,
         is_active=True,  # 新用户默认激活
         role="user"  # 默认角色为普通用户
     )
@@ -94,7 +107,7 @@ def register_user(
     db.commit()
     db.refresh(user)
     
-    # 4. 返回创建成功的 User 对象
+    # 5. 返回创建成功的 User 对象
     return user
 
 

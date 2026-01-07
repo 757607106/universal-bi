@@ -7,9 +7,11 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, index=True, nullable=False)  # 登录账号
     email = Column(String(255), unique=True, index=True)
     hashed_password = Column(String(255))
     full_name = Column(String(255))
+    company = Column(String(255), nullable=True)  # 公司信息
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)  # 平台超级管理员
     is_deleted = Column(Boolean, default=False)  # 软删除标记

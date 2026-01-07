@@ -90,10 +90,11 @@ CREATE TABLE IF NOT EXISTS dashboard_cards (
 -- 创建用户表
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTO_INCREMENT,
-    username VARCHAR(50) NOT NULL UNIQUE COMMENT '用户名',
+    username VARCHAR(50) NOT NULL UNIQUE COMMENT '登录账号',
     email VARCHAR(255) UNIQUE COMMENT '邮箱',
     hashed_password VARCHAR(255) NOT NULL COMMENT '加密后的密码',
-    full_name VARCHAR(255) COMMENT '全名',
+    full_name VARCHAR(255) COMMENT '姓名',
+    company VARCHAR(255) COMMENT '公司信息',
     is_active BOOLEAN DEFAULT TRUE COMMENT '是否激活',
     is_superuser BOOLEAN DEFAULT FALSE COMMENT '是否超级管理员',
     is_deleted BOOLEAN DEFAULT FALSE COMMENT '软删除标记',
@@ -138,15 +139,15 @@ CREATE INDEX idx_chat_message_owner ON chat_messages(owner_id);
 CREATE INDEX idx_chat_message_created ON chat_messages(created_at);
 
 -- 插入默认管理员账户（密码: admin123）
-INSERT IGNORE INTO users (username, email, hashed_password, full_name, is_superuser) 
-VALUES ('admin', 'admin@example.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYmOTLYV8Ku', '系统管理员', TRUE);
+INSERT IGNORE INTO users (username, email, hashed_password, full_name, company, is_superuser) 
+VALUES ('admin', 'admin@example.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYmOTLYV8Ku', '系统管理员', 'Universal BI', TRUE);
 
 -- 打印初始化信息
 SELECT '===========================================';
 SELECT 'Universal BI 数据库初始化完成';
 SELECT '===========================================';
 SELECT '默认管理员账户:';
-SELECT '  用户名: admin';
+SELECT '  账号: admin';
 SELECT '  密码: admin123';
 SELECT '  请登录后及时修改密码！';
 SELECT '===========================================';

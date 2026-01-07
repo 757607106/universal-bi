@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     # ========== 应用基础配置 ==========
     PROJECT_NAME: str = "Universal BI"
     API_V1_STR: str = "/api/v1"
+    DEV: bool = True  # 开发环境标志，True=开发环境（彩色日志），False=生产环境（JSON日志）
     
     # ========== JWT安全配置 ==========
     SECRET_KEY: str = "change_this_to_a_secure_random_key_in_production"

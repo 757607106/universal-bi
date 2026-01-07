@@ -55,7 +55,7 @@ def get_current_user(
     
     # === 安全检查 3 & 4: 用户状态检查 ===
     user = db.query(User).filter(
-        User.email == token_data.username
+        User.username == token_data.username
     ).first()
     
     if user is None:

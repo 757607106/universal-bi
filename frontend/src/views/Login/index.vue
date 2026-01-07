@@ -2,7 +2,7 @@
 import { reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useUserStore } from "@/store/modules/user";
-import { User, Lock, Message } from "@element-plus/icons-vue";
+import { User, Lock } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import Regist from "./components/regist.vue";
 
@@ -14,14 +14,14 @@ const loading = ref(false);
 const currentPage = ref(0); // 0: login, 1: register
 
 const loginForm = reactive({
-  username: "", // 这里存储的实际是 email
+  username: "",
   password: ""
 });
 
 const rules = {
   username: [
-    { required: true, message: "请输入邮箱", trigger: "blur" },
-    { type: "email" as const, message: "请输入有效的邮箱地址", trigger: "blur" }
+    { required: true, message: "请输入账号", trigger: "blur" },
+    { min: 3, max: 50, message: "账号长度在3-50位之间", trigger: "blur" }
   ],
   password: [{ required: true, message: "请输入密码", trigger: "blur" }]
 };
@@ -85,8 +85,8 @@ const switchToLogin = () => {
           <el-form-item prop="username">
             <el-input
               v-model="loginForm.username"
-              placeholder="邮箱"
-              :prefix-icon="Message"
+              placeholder="账号"
+              :prefix-icon="User"
               size="large"
             />
           </el-form-item>
