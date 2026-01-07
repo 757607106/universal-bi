@@ -14,6 +14,18 @@ export interface ChatResponse {
   from_cache?: boolean  // Whether result is from cache
 }
 
+export interface SummaryRequest {
+  dataset_id: number
+  question: string
+  sql: string
+  columns: string[]
+  rows: any[]
+}
+
+export interface SummaryResponse {
+  summary: string
+}
+
 export interface FeedbackRequest {
   dataset_id: number
   question: string
@@ -39,6 +51,10 @@ export const sendChat = async (data: { dataset_id: number, question: string }) =
     steps: responseData.steps || [],
     from_cache: responseData.from_cache || false
   } as ChatResponse
+}
+
+export const generateSummary = async (data: SummaryRequest): Promise<SummaryResponse> => {
+  return await http.post<SummaryResponse, SummaryRequest>('/chat/summary', data)
 }
 
 export const submitFeedback = async (data: FeedbackRequest): Promise<FeedbackResponse> => {

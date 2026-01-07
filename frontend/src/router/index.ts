@@ -30,6 +30,14 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/Dataset/index.vue')
       },
       {
+        path: 'datasets/modeling',
+        name: 'dataset-modeling',
+        component: () => import('@/views/Dataset/modeling/index.vue'),
+        meta: {
+          title: '可视化建模'
+        }
+      },
+      {
         path: 'chat',
         name: 'chat',
         component: () => import('@/views/Chat/index.vue')

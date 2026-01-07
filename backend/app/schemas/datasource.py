@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 class DataSourceBase(BaseModel):
     name: str
@@ -20,3 +20,14 @@ class DataSource(DataSourceBase):
 
     class Config:
         from_attributes = True
+
+# Table structure schemas
+class ColumnInfo(BaseModel):
+    name: str
+    type: str
+    nullable: Optional[bool] = True
+    default: Optional[str] = None
+
+class TableInfo(BaseModel):
+    name: str
+    columns: List[ColumnInfo]

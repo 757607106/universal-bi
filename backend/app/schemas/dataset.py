@@ -38,3 +38,35 @@ class BusinessTermResponse(BusinessTermBase):
 
     class Config:
         from_attributes = True
+
+
+# Modeling Schemas
+class AnalyzeRelationshipsRequest(BaseModel):
+    datasource_id: int
+    table_names: List[str]
+
+class EdgeResponse(BaseModel):
+    source: str
+    target: str
+    source_col: str
+    target_col: str
+    type: str
+    confidence: Optional[str] = None
+
+class FieldResponse(BaseModel):
+    name: str
+    type: str
+    nullable: bool = True
+
+class NodeResponse(BaseModel):
+    table_name: str
+    fields: List[FieldResponse]
+
+class AnalyzeRelationshipsResponse(BaseModel):
+    edges: List[EdgeResponse]
+    nodes: List[NodeResponse]
+
+class CreateViewRequest(BaseModel):
+    datasource_id: int
+    view_name: str
+    sql: str

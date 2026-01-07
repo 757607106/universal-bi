@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import select
+from sqlalchemy import select, inspect
 from app.models.metadata import Dataset
 from app.core.config import settings
 from app.services.db_inspector import DBInspector
@@ -140,6 +140,15 @@ class VannaManager:
         return f"bi:cache:{dataset_id}:{question_hash}"
     
     @staticmethod
+    def _generate_sql_cache_key(dataset_id: int, question: str) -> str:
+        """
+        Generate SQL cache key for a query.
+        Format: bi:sql_cache:{dataset_id}:{hash(question)}
+        """
+        question_hash = hashlib.md5(question.encode('utf-8')).hexdigest()
+        return f"bi:sql_cache:{dataset_id}:{question_hash}"
+    
+    @staticmethod
     def _serialize_cache_data(result: dict) -> str:
         """
         Serialize result data to JSON string for Redis storage.
@@ -157,6 +166,7 @@ class VannaManager:
     def clear_cache(cls, dataset_id: int) -> int:
         """
         Clear all cached queries for a specific dataset.
+        Clears both result cache and SQL cache.
         Useful when dataset is retrained or terms are updated.
         
         Args:
@@ -171,17 +181,30 @@ class VannaManager:
             return -1
         
         try:
-            # Find all keys matching the pattern
-            pattern = f"bi:cache:{dataset_id}:*"
-            keys = redis_client.keys(pattern)
+            total_deleted = 0
             
-            if keys:
-                deleted = redis_client.delete(*keys)
-                logger.info(f"Cleared {deleted} cached queries for dataset {dataset_id}")
-                return deleted
+            # 1. Clear result cache
+            result_pattern = f"bi:cache:{dataset_id}:*"
+            result_keys = redis_client.keys(result_pattern)
+            if result_keys:
+                deleted = redis_client.delete(*result_keys)
+                total_deleted += deleted
+                logger.info(f"Cleared {deleted} result cache entries for dataset {dataset_id}")
+            
+            # 2. Clear SQL cache
+            sql_pattern = f"bi:sql_cache:{dataset_id}:*"
+            sql_keys = redis_client.keys(sql_pattern)
+            if sql_keys:
+                deleted = redis_client.delete(*sql_keys)
+                total_deleted += deleted
+                logger.info(f"Cleared {deleted} SQL cache entries for dataset {dataset_id}")
+            
+            if total_deleted > 0:
+                logger.info(f"Total cleared {total_deleted} cache entries for dataset {dataset_id}")
             else:
-                logger.info(f"No cached queries found for dataset {dataset_id}")
-                return 0
+                logger.info(f"No cached entries found for dataset {dataset_id}")
+            
+            return total_deleted
         except RedisError as e:
             logger.error(f"Failed to clear cache for dataset {dataset_id}: {e}")
             return -1
@@ -431,7 +454,67 @@ class VannaManager:
         """
         execution_steps = []
         
-        # === Step 0: Cache Check ===
+        # === Step 0: SQL Cache Check (v1.3 性能优化) ===
+        if allow_cache:
+            redis_client = VannaManager._get_redis_client()
+            sql_cache_key = VannaManager._generate_sql_cache_key(dataset_id, question)
+            
+            if redis_client:
+                try:
+                    cached_sql = redis_client.get(sql_cache_key)
+                    if cached_sql:
+                        logger.info(f"SQL cache hit for dataset {dataset_id}, question: {question[:50]}...")
+                        execution_steps.append("SQL缓存命中")
+                        
+                        # 关键点：拿到缓存的 SQL 后，重新执行查询获取最新数据
+                        try:
+                            # 获取 dataset 和 datasource
+                            stmt = select(Dataset).options(selectinload(Dataset.datasource)).where(Dataset.id == dataset_id)
+                            result = db_session.execute(stmt)
+                            dataset = result.scalars().first()
+                            
+                            if not dataset or not dataset.datasource:
+                                # 如果 dataset 或 datasource 不存在，这个缓存已经无效了
+                                logger.warning(f"Dataset {dataset_id} or datasource not found, invalidating SQL cache")
+                                redis_client.delete(sql_cache_key)
+                                execution_steps.append("缓存已失效，进入常规流程")
+                            else:
+                                # 重新执行 SQL 查询
+                                engine = DBInspector.get_engine(dataset.datasource)
+                                df = pd.read_sql(cached_sql, engine)
+                                execution_steps.append(f"SQL缓存命中，重新执行查询，返回 {len(df)} 行")
+                                
+                                # 推断图表类型
+                                chart_type = VannaManager._infer_chart_type(df)
+                                
+                                # 序列化数据
+                                cleaned_rows = VannaManager._serialize_dataframe(df)
+                                
+                                return {
+                                    "sql": cached_sql,
+                                    "columns": df.columns.tolist(),
+                                    "rows": cleaned_rows,
+                                    "chart_type": chart_type,
+                                    "summary": None,
+                                    "steps": execution_steps,
+                                    "from_cache": True,
+                                    "cache_type": "sql"  # 标记是 SQL 级缓存
+                                }
+                        except Exception as e:
+                            logger.warning(f"Cached SQL execution failed: {e}. Proceeding with full generation.")
+                            execution_steps.append(f"缓存 SQL 执行失败: {str(e)[:50]}，进入常规流程")
+                            # 删除无效缓存
+                            redis_client.delete(sql_cache_key)
+                    else:
+                        logger.debug(f"SQL cache miss for dataset {dataset_id}")
+                        execution_steps.append("SQL缓存未命中")
+                except RedisError as e:
+                    logger.warning(f"SQL cache read failed: {e}. Proceeding without cache.")
+                    execution_steps.append(f"SQL缓存读取失败: {str(e)[:50]}")
+        
+        # === Step 1: 原有结果缓存检查 (保留兼容性) ===
+        # 注意：这里的结果缓存会缓存完整的查询结果，而 SQL 缓存只缓存 SQL
+        # 两种缓存可以共存，结果缓存 TTL 更短（5分钟），SQL 缓存 TTL 更长（7天）
         if allow_cache:
             redis_client = VannaManager._get_redis_client()
             cache_key = VannaManager._generate_cache_key(dataset_id, question)
@@ -639,6 +722,21 @@ class VannaManager:
                     if allow_cache:
                         redis_client = VannaManager._get_redis_client()
                         if redis_client:
+                            # 1. 写入 SQL 缓存 (v1.3 性能优化 - 保存 SQL，7天 TTL)
+                            try:
+                                sql_cache_key = VannaManager._generate_sql_cache_key(dataset_id, question)
+                                redis_client.setex(
+                                    sql_cache_key,
+                                    settings.SQL_CACHE_TTL,
+                                    cleaned_sql  # 直接存储 SQL 字符串
+                                )
+                                logger.info(f"SQL cached for dataset {dataset_id}, TTL: {settings.SQL_CACHE_TTL}s (7 days)")
+                                execution_steps.append(f"SQL已缓存 (TTL: {settings.SQL_CACHE_TTL}s)")
+                            except RedisError as e:
+                                logger.warning(f"SQL cache write failed: {e}.")
+                                execution_steps.append(f"SQL缓存写入失败: {str(e)[:50]}")
+                            
+                            # 2. 写入结果缓存 (原有逻辑，保留兼容性，5分钟 TTL)
                             try:
                                 cache_key = VannaManager._generate_cache_key(dataset_id, question)
                                 cache_data = VannaManager._serialize_cache_data(result)
@@ -650,8 +748,8 @@ class VannaManager:
                                 logger.info(f"Result cached for dataset {dataset_id}, TTL: {settings.REDIS_CACHE_TTL}s")
                                 execution_steps.append(f"结果已缓存 (TTL: {settings.REDIS_CACHE_TTL}s)")
                             except RedisError as e:
-                                logger.warning(f"Cache write failed: {e}. Result returned without caching.")
-                                execution_steps.append(f"缓存写入失败: {str(e)[:50]}")
+                                logger.warning(f"Result cache write failed: {e}. Result returned without caching.")
+                                execution_steps.append(f"结果缓存写入失败: {str(e)[:50]}")
                     
                     return result
                     
@@ -1050,3 +1148,273 @@ SQL:
         sql = sql.replace("```sql", "").replace("```", "").strip()
         
         return sql
+    
+    @staticmethod
+    def generate_summary(question: str, df: pd.DataFrame, dataset_id: int) -> str:
+        """
+        Generate AI-powered business summary of query results.
+        
+        Args:
+            question: User's original question
+            df: Query result DataFrame
+            dataset_id: Dataset ID for Vanna instance
+            
+        Returns:
+            str: AI-generated summary text (100 words max, in Chinese)
+        """
+        if df is None or df.empty:
+            return "数据为空，无法生成总结。"
+        
+        try:
+            # Get Vanna instance for LLM
+            vn = VannaManager.get_legacy_vanna(dataset_id)
+            
+            # 1. Prepare data preview
+            # Convert head (max 5 rows) to markdown table
+            data_preview_parts = []
+            
+            # Add head data
+            head_df = df.head(5)
+            data_preview_parts.append("前 5 行数据：")
+            data_preview_parts.append(head_df.to_markdown(index=False))
+            
+            # Add statistical description if contains numeric columns
+            numeric_cols = df.select_dtypes(include=['number']).columns
+            if len(numeric_cols) > 0:
+                describe_df = df[numeric_cols].describe()
+                data_preview_parts.append("\n统计描述：")
+                data_preview_parts.append(describe_df.to_markdown())
+            
+            data_preview = "\n".join(data_preview_parts)
+            
+            # 2. Construct prompt
+            prompt = f"""用户问题：{question}
+
+查询结果数据如下：
+{data_preview}
+
+请基于上述数据，用一段简练的中文总结数据趋势或关键发现（100字以内）。
+
+要求：
+1. 直接输出总结文字，不要添加“总结：”等前缀
+2. 用业务语言，避免技术词汇
+3. 突出关键数字和趋势
+4. 保持简洁、友好"""
+            
+            # 3. Call LLM
+            summary = vn.submit_prompt(prompt)
+            
+            # 4. Clean and validate
+            summary = summary.strip()
+            
+            # Remove common prefixes
+            prefixes_to_remove = ["总结：", "分析：", "AI总结：", "数据分析："]
+            for prefix in prefixes_to_remove:
+                if summary.startswith(prefix):
+                    summary = summary[len(prefix):].strip()
+            
+            # Limit length (just in case LLM ignores the limit)
+            if len(summary) > 200:
+                summary = summary[:200] + "..."
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Failed to generate summary: {e}")
+            return "总结生成失败，请稍后再试。"
+    
+    @staticmethod
+    def analyze_relationships(dataset_id: int, table_names: list[str], db_session: Session) -> dict:
+        """
+        Use LLM to analyze potential relationships between tables.
+        
+        Args:
+            dataset_id: Dataset ID
+            table_names: List of table names to analyze
+            db_session: Database session
+            
+        Returns:
+            dict: {
+                'edges': [{'source': 'users', 'target': 'orders', 'source_col': 'id', 'target_col': 'user_id', 'type': 'left'}],
+                'nodes': [{'table_name': 'users', 'fields': [...]}]
+            }
+        """
+        try:
+            # Get dataset and datasource
+            stmt = select(Dataset).options(selectinload(Dataset.datasource)).where(Dataset.id == dataset_id)
+            result = db_session.execute(stmt)
+            dataset = result.scalars().first()
+            
+            if not dataset or not dataset.datasource:
+                raise ValueError("数据集或数据源不存在")
+            
+            datasource = dataset.datasource
+            
+            # 1. Get DDLs for all tables
+            ddl_list = []
+            nodes = []
+            
+            # Get engine and inspector once
+            engine = DBInspector.get_engine(datasource)
+            inspector = inspect(engine)
+            
+            for table_name in table_names:
+                try:
+                    # Get table columns using inspector (faster than DDL generation)
+                    columns = inspector.get_columns(table_name)
+                    
+                    # Build simple DDL representation
+                    ddl_parts = [f"CREATE TABLE {table_name} ("]
+                    col_definitions = []
+                    for col in columns:
+                        col_def = f"  {col['name']} {str(col['type'])}"
+                        if not col.get('nullable', True):
+                            col_def += " NOT NULL"
+                        col_definitions.append(col_def)
+                    ddl_parts.append(",\n".join(col_definitions))
+                    ddl_parts.append(")")
+                    ddl = "\n".join(ddl_parts)
+                    
+                    ddl_list.append(f"-- {table_name}\n{ddl}")
+                    
+                    # Build fields for nodes
+                    fields = []
+                    for col in columns:
+                        fields.append({
+                            'name': col['name'],
+                            'type': str(col['type']),
+                            'nullable': col.get('nullable', True)
+                        })
+                    
+                    nodes.append({
+                        'table_name': table_name,
+                        'fields': fields
+                    })
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to get structure for {table_name}: {e}")
+                    # Try to continue with other tables
+                    continue
+            
+            if not ddl_list:
+                raise ValueError("无法获取表结构信息")
+            
+            # 2. Construct prompt for LLM
+            ddl_content = "\n\n".join(ddl_list)
+            
+            # Optimized prompt for strict JSON output
+            prompt = f"""Analyze the following database table structures and identify potential foreign key relationships:
+
+{ddl_content}
+
+Analysis rules:
+1. Look for naming patterns (e.g., user_id likely references users.id)
+2. Consider common relationship patterns (order_id, product_id, customer_id, etc.)
+3. Verify field type compatibility
+4. Consider business logic reasonability
+
+**CRITICAL**: Strictly return ONLY a JSON array. Do not use Markdown formatting. No explanation. No code blocks.
+
+Expected format:
+[{{
+  "source": "table_a",
+  "target": "table_b",
+  "source_col": "id",
+  "target_col": "a_id",
+  "type": "left",
+  "confidence": "high"
+}}]
+
+If no relationships found, return: []
+
+Your response (JSON array only):"""
+            
+            # 3. Call LLM
+            vn = VannaManager.get_legacy_vanna(dataset_id)
+            llm_response = vn.submit_prompt(prompt)
+            
+            logger.info(f"LLM relationship analysis response: {llm_response}")
+            
+            # 4. Enhanced JSON parsing with robust cleaning
+            try:
+                # Step 1: Clean markdown code blocks
+                cleaned_response = llm_response.strip()
+                
+                # Remove markdown code block markers (```json, ```, etc.)
+                cleaned_response = re.sub(r'^```(?:json)?\s*', '', cleaned_response, flags=re.IGNORECASE)
+                cleaned_response = re.sub(r'\s*```$', '', cleaned_response)
+                cleaned_response = cleaned_response.strip()
+                
+                # Step 2: Try direct JSON parsing
+                try:
+                    edges = json.loads(cleaned_response)
+                    logger.info("JSON parsed successfully on first attempt")
+                except json.JSONDecodeError as e:
+                    logger.warning(f"First JSON parse failed: {e}. Attempting regex extraction...")
+                    
+                    # Step 3: Try extracting JSON array using regex
+                    match = re.search(r'\[.*\]', cleaned_response, re.DOTALL)
+                    if match:
+                        json_str = match.group()
+                        edges = json.loads(json_str)
+                        logger.info("JSON extracted and parsed successfully using regex")
+                    else:
+                        # Step 4: Last resort - try to find any valid JSON structure
+                        # Look for content between first [ and last ]
+                        start_idx = cleaned_response.find('[')
+                        end_idx = cleaned_response.rfind(']')
+                        
+                        if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+                            json_str = cleaned_response[start_idx:end_idx + 1]
+                            edges = json.loads(json_str)
+                            logger.info("JSON parsed successfully using index-based extraction")
+                        else:
+                            # No valid JSON found, return empty
+                            logger.error(f"Could not find valid JSON array in response: {cleaned_response[:200]}")
+                            edges = []
+                
+                # Validate structure
+                if not isinstance(edges, list):
+                    logger.warning(f"LLM response is not a list, wrapping in list: {type(edges)}")
+                    edges = [edges] if isinstance(edges, dict) else []
+                
+                # Filter and validate edges
+                valid_edges = []
+                for edge in edges:
+                    if isinstance(edge, dict) and all(k in edge for k in ['source', 'target', 'source_col', 'target_col']):
+                        # Ensure type is set
+                        if 'type' not in edge:
+                            edge['type'] = 'left'
+                        # Ensure confidence is set
+                        if 'confidence' not in edge:
+                            edge['confidence'] = 'medium'
+                        valid_edges.append(edge)
+                    else:
+                        logger.warning(f"Skipping invalid edge structure: {edge}")
+                
+                logger.info(f"Analyzed {len(valid_edges)} valid relationships between {len(table_names)} tables")
+                
+                return {
+                    'edges': valid_edges,
+                    'nodes': nodes
+                }
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse LLM JSON response after all attempts: {e}")
+                logger.error(f"Raw response: {llm_response}")
+                logger.error(f"Cleaned response: {cleaned_response[:500]}")
+                # Return empty edges if parsing fails
+                return {
+                    'edges': [],
+                    'nodes': nodes
+                }
+            except Exception as e:
+                logger.error(f"Unexpected error during JSON parsing: {e}")
+                return {
+                    'edges': [],
+                    'nodes': nodes
+                }
+        
+        except Exception as e:
+            logger.error(f"Failed to analyze relationships: {e}")
+            raise ValueError(f"关联分析失败: {str(e)}")

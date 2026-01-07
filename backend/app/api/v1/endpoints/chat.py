@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+import pandas as pd
 
 from app.db.session import get_db
 from app.api.deps import get_current_user, apply_ownership_filter
 from app.models.metadata import User, Dataset
-from app.schemas.chat import ChatRequest, ChatResponse, FeedbackRequest, FeedbackResponse
+from app.schemas.chat import ChatRequest, ChatResponse, FeedbackRequest, FeedbackResponse, SummaryRequest, SummaryResponse
 from app.services.vanna_manager import VannaManager
 
 router = APIRouter()
@@ -107,3 +108,47 @@ async def submit_feedback(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"反馈提交失败: {str(e)}")
+
+@router.post("/summary", response_model=SummaryResponse)
+async def generate_summary(
+    request: SummaryRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Generate AI-powered business summary of query results.
+    This is a separate endpoint to avoid blocking the main chat response.
+    应用数据隔离：需要验证 Dataset 的访问权
+    
+    Args:
+        request: Summary request containing dataset_id, question, sql, and chart_data
+        db: Database session
+        current_user: Current authenticated user
+    
+    Returns:
+        SummaryResponse with AI-generated summary text
+    """
+    # 验证 Dataset 访问权限
+    ds_query = db.query(Dataset).filter(Dataset.id == request.dataset_id)
+    ds_query = apply_ownership_filter(ds_query, Dataset, current_user)
+    dataset = ds_query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    try:
+        # Convert rows to DataFrame
+        df = pd.DataFrame(request.rows)
+        
+        # Generate summary
+        summary = VannaManager.generate_summary(
+            question=request.question,
+            df=df,
+            dataset_id=request.dataset_id
+        )
+        
+        return SummaryResponse(summary=summary)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"总结生成失败: {str(e)}")

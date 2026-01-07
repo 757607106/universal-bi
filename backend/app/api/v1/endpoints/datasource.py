@@ -1,14 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
+import logging
 
 from app.db.session import SessionLocal, get_db
 from app.api.deps import get_current_user, apply_ownership_filter
 from app.models.metadata import DataSource, User
-from app.schemas.datasource import DataSource as DataSourceSchema, DataSourceCreate
+from app.schemas.datasource import (
+    DataSource as DataSourceSchema, 
+    DataSourceCreate,
+    TableInfo
+)
 from app.services.db_inspector import DBInspector
 from app.core.security import encrypt_password
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.post("/test", response_model=bool)
@@ -92,14 +98,14 @@ def delete_datasource(
     db.commit()
     return True
 
-@router.get("/{id}/tables", response_model=List[str])
+@router.get("/{id}/tables", response_model=List[TableInfo])
 def get_datasource_tables(
     id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Get all table names for a data source.
+    Get all table names and structures for a data source.
     应用数据隔离：只能查看自己的或公共的数据源
     """
     query = db.query(DataSource).filter(DataSource.id == id)
@@ -110,8 +116,45 @@ def get_datasource_tables(
         raise HTTPException(status_code=404, detail="DataSource not found or access denied")
     
     try:
-        return DBInspector.get_table_names(datasource)
+        from sqlalchemy import inspect as sa_inspect
+        
+        # Get table names
+        table_names = DBInspector.get_table_names(datasource)
+        
+        # Get engine and inspector
+        engine = DBInspector.get_engine(datasource)
+        inspector = sa_inspect(engine)
+        
+        # Build table info with columns
+        tables_info = []
+        for table_name in table_names:
+            try:
+                columns = inspector.get_columns(table_name)
+                column_info = [
+                    {
+                        'name': col['name'],
+                        'type': str(col['type']),
+                        'nullable': col.get('nullable', True),
+                        'default': str(col.get('default')) if col.get('default') is not None else None
+                    }
+                    for col in columns
+                ]
+                
+                tables_info.append({
+                    'name': table_name,
+                    'columns': column_info
+                })
+            except Exception as e:
+                logger.warning(f"Failed to get columns for table {table_name}: {e}")
+                # Include table even if column fetch fails
+                tables_info.append({
+                    'name': table_name,
+                    'columns': []
+                })
+        
+        return tables_info
     except Exception as e:
+        logger.error(f"Failed to fetch tables: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch tables: {str(e)}")
 
 @router.get("/{id}/tables/{table_name}/preview", response_model=Dict[str, Any])

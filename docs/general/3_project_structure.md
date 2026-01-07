@@ -1,6 +1,6 @@
 # Universal BI 项目完整结构文档
 
-> 最后更新：2026-01-06  
+> 最后更新：2026-01-07  
 > 本文档详细描述了 Universal BI 项目的完整目录结构、各模块职责及关键技术实现。
 
 ## 📁 根目录结构
@@ -101,7 +101,7 @@ backend/
 | `admin.py` | 系统管理 | `GET /users`, `PATCH /users/{id}/status` |
 | `chat.py` | Chat BI 对话功能 | `POST /chat/` - 自然语言查询 |
 | `dashboard.py` | 仪表盘管理 | CRUD 操作 + 卡片管理 |
-| `dataset.py` | 数据集管理 | 创建、训练、查询 Dataset |
+| `dataset.py` | 数据集管理 + 可视化建模 | 创建、训练、查询 Dataset；AI 分析关联；创建视图 |
 | `datasource.py` | 数据源管理 | 连接测试、CRUD 操作 |
 
 #### 2. 服务层 (`services/`)
@@ -117,6 +117,17 @@ backend/
 **`db_inspector.py` - 数据库检查服务**
 - 支持 MySQL、PostgreSQL
 - 测试连接、获取表列表、提取 DDL
+
+#### 4. 可视化建模核心函数 (`endpoints/dataset.py`) ✨
+
+**`_deduplicate_sql_columns()` - SQL 重复列名去重**
+- 解析 SELECT 子句，检测重复列名
+- 为重复列自动添加表别名前缀（如 `u.user_id AS u_user_id`）
+- 解决 MySQL/PostgreSQL 创建视图时重复列名报错问题
+
+**相关 API 端点**：
+- `POST /datasets/analyze` - AI 分析表关联关系
+- `POST /datasets/create_view` - 创建数据库视图（宽表）
 
 #### 3. 数据模型 (`models/metadata.py`)
 
@@ -160,7 +171,7 @@ frontend/
 │   ├── api/                      # API 调用封装
 │   │   ├── chat.ts               # Chat API
 │   │   ├── dashboard.ts          # Dashboard API
-│   │   ├── dataset.ts            # Dataset API
+│   │   ├── dataset.ts            # Dataset API (含建模接口)
 │   │   ├── datasource.ts         # DataSource API
 │   │   ├── user.ts               # 用户 Auth API
 │   │   └── system.ts             # 系统管理 API
@@ -190,6 +201,11 @@ frontend/
 │       ├── Chat/                 # Chat BI 页面
 │       ├── Dashboard/            # 仪表盘相关页面
 │       ├── Dataset/              # Dataset 管理页面
+│       │   ├── index.vue         # 数据集列表
+│       │   └── modeling/         # 可视化建模模块 ✨
+│       │       ├── index.vue     # 建模主页面 (VueFlow 画布)
+│       │       └── components/
+│       │           └── TableNode.vue  # 表节点组件
 │       ├── Login/                # 登录/注册页面
 │       └── System/               # 系统管理页面
 ```
@@ -216,7 +232,22 @@ Routes:
 - **UI 组件**：Element Plus
 - **CSS**：Tailwind CSS
 - **图表**：ECharts + vue-echarts
+- **可视化建模**：@vue-flow/core + @vue-flow/background + @vue-flow/controls ✨
 - **HTTP**：Axios (拦截器处理 Token 和 401)
+
+#### 3. 可视化建模模块 (`views/Dataset/modeling/`) ✨
+
+**`index.vue` - 建模主页面**
+- 三栏布局：表选择器(20%) + VueFlow画布(60%) + 属性面板(20%)
+- 支持拖拽/双击添加表到画布
+- **手动连线**：VueFlow `connect-on-click` 模式
+- **连线编辑**：右侧面板字段选择器 + `handleUpdateEdge()`
+- **连线删除**：`removeEdges()` API
+- **SQL生成**：`generateSQL()` 自动去重列名并添加别名
+
+**`components/TableNode.vue` - 表节点组件**
+- 显示表名、字段列表(前5个)、字段类型图标
+- 左侧绿色 Handle (target) + 右侧蓝色 Handle (source)
 
 ---
 
@@ -308,4 +339,4 @@ Routes:
 ---
 
 > **维护说明**：本文档需要随项目结构变化及时更新。  
-> **最后更新**: 2026-01-07 - 添加部署配置和环境管理相关内容
+> **最后更新**: 2026-01-07 - 添加可视化建模模块、连线功能、SQL去重相关内容

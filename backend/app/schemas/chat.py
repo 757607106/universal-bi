@@ -15,6 +15,16 @@ class ChatResponse(BaseModel):
     steps: Optional[List[str]] = None  # Execution steps tracking
     from_cache: Optional[bool] = False  # Whether result is from cache
 
+class SummaryRequest(BaseModel):
+    dataset_id: int
+    question: str
+    sql: str
+    columns: List[str]
+    rows: List[Dict[str, Any]]
+
+class SummaryResponse(BaseModel):
+    summary: str
+
 class FeedbackRequest(BaseModel):
     dataset_id: int
     question: str

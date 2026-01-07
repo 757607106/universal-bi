@@ -6,10 +6,12 @@
           <h1 class="text-3xl font-bold mb-2 text-gray-900 dark:text-slate-100">数据集管理</h1>
           <p class="text-gray-500 dark:text-slate-400">构建和管理用于 AI 分析的业务数据集</p>
         </div>
-        <el-button type="primary" @click="wizardVisible = true" class="bg-blue-600 shadow-lg shadow-blue-500/30 hover:bg-blue-500 border-none">
-          <el-icon class="mr-2"><Plus /></el-icon>
-          新建数据集
-        </el-button>
+        <div class="flex gap-3">
+          <el-button type="primary" @click="wizardVisible = true" class="bg-blue-600 shadow-lg shadow-blue-500/30 hover:bg-blue-500 border-none">
+            <el-icon class="mr-2"><Plus /></el-icon>
+            新建数据集
+          </el-button>
+        </div>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -50,6 +52,10 @@
             </div>
             
             <div class="pt-4 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2">
+              <el-button size="small" @click="handleGoModeling(dataset)" class="!bg-purple-50 dark:!bg-purple-500/10 !border-purple-200 dark:!border-purple-500/50 !text-purple-600 dark:!text-purple-400 hover:!bg-purple-100 dark:hover:!bg-purple-500/20">
+                <el-icon class="mr-1"><MagicStick /></el-icon>
+                可视化建模
+              </el-button>
               <el-button v-if="dataset.training_status !== 'training'" size="small" @click="handleRetrain(dataset)" class="!bg-gray-100 dark:!bg-slate-700 hover:!bg-gray-200 dark:hover:!bg-slate-600 !border-gray-200 dark:!border-slate-600 !text-gray-700 dark:!text-slate-200">
                 重新训练
               </el-button>
@@ -71,11 +77,13 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { Plus, Files, Loading } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
+import { Plus, Files, Loading, MagicStick } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { getDatasetList, trainDataset, type Dataset } from '@/api/dataset'
 import DatasetWizard from './components/DatasetWizard.vue'
 
+const router = useRouter()
 const wizardVisible = ref(false)
 const datasetList = ref<Dataset[]>([])
 let pollingTimer: ReturnType<typeof setInterval> | null = null
@@ -132,6 +140,18 @@ const getStatusText = (status: string) => {
 const formatDate = (dateStr: string | null) => {
   if (!dateStr) return '-'
   return new Date(dateStr).toLocaleString()
+}
+
+// 跳转到可视化建模页面
+const handleGoModeling = (dataset: any) => {
+  // 传递 datasource_id 到建模页面
+  router.push({
+    path: '/datasets/modeling',
+    query: {
+      dataset_id: dataset.id,
+      datasource_id: dataset.datasource_id
+    }
+  })
 }
 
 onMounted(() => {

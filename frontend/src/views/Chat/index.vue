@@ -200,6 +200,33 @@
                        :data="{ columns: msg.chartData.columns, rows: msg.chartData.rows }"
                      />
                   </div>
+                  
+                  <!-- AI Summary Section -->
+                  <div class="bg-gradient-to-r from-blue-50/50 to-cyan-50/50 dark:from-slate-900/50 dark:to-slate-800/50 rounded-xl p-4 border border-blue-200/50 dark:border-slate-700/50">
+                    <!-- Loading State -->
+                    <div v-if="msg.summaryLoading" class="flex items-center gap-3 text-blue-600 dark:text-cyan-400">
+                      <el-icon class="is-loading text-xl"><Loading /></el-icon>
+                      <span class="text-sm font-medium">✨ AI 正在分析数据...</span>
+                    </div>
+                    
+                    <!-- Summary Content with Typing Effect -->
+                    <div v-else-if="msg.summary" class="space-y-2">
+                      <div class="flex items-center gap-2 text-blue-600 dark:text-cyan-400 mb-2">
+                        <el-icon class="text-lg"><DataAnalysis /></el-icon>
+                        <span class="text-xs font-semibold uppercase tracking-wide">智能分析</span>
+                      </div>
+                      <p class="text-sm text-gray-700 dark:text-slate-300 leading-relaxed">
+                        {{ msg.summary }}
+                      </p>
+                    </div>
+                    
+                    <!-- Error State -->
+                    <div v-else-if="msg.summaryError" class="flex items-center gap-3 text-gray-400 dark:text-slate-500">
+                      <el-icon class="text-lg"><WarningFilled /></el-icon>
+                      <span class="text-xs">总结生成失败</span>
+                    </div>
+                  </div>
+                  
                   <!-- Save to Dashboard Button -->
                   <div class="flex justify-end opacity-0 group-hover:opacity-100 transition-opacity">
                     <el-button
@@ -390,7 +417,7 @@ import {
   DataAnalysis
 } from '@element-plus/icons-vue'
 import { getDatasetList, type Dataset } from '@/api/dataset'
-import { sendChat, submitFeedback } from '@/api/chat'
+import { sendChat, submitFeedback, generateSummary } from '@/api/chat'
 import { getDashboards, createDashboard, addCardToDashboard, type Dashboard } from '@/api/dashboard'
 import DynamicChart from '@/components/Charts/DynamicChart.vue'
 
@@ -407,6 +434,9 @@ interface Message {
   steps?: string[]  // 执行步骤
   isSystemError?: boolean  // 区分系统错误和业务澄清
   feedbackGiven?: 'like' | 'dislike'  // 反馈状态
+  summary?: string  // AI 业务总结
+  summaryLoading?: boolean  // 总结加载中
+  summaryError?: boolean  // 总结加载失败
 }
 
 const currentDatasetId = ref<number | undefined>(undefined)
@@ -596,7 +626,36 @@ const handleSend = async () => {
       datasetId: currentDatasetId.value,
       steps: res.steps,
       error: false,
-      isSystemError: false
+      isSystemError: false,
+      summaryLoading: false,
+      summary: undefined,
+      summaryError: false
+    }
+    
+    // 如果有图表数据，异步生成 AI 总结
+    if (chartData && chartData.rows && chartData.rows.length > 0 && res.sql) {
+      // 先设置 loading 状态
+      messages.value[aiMsgIndex].summaryLoading = true
+      scrollToBottom()
+      
+      try {
+        const summaryRes = await generateSummary({
+          dataset_id: currentDatasetId.value!,
+          question: question,
+          sql: res.sql,
+          columns: chartData.columns!,
+          rows: chartData.rows
+        })
+        
+        // 更新总结
+        messages.value[aiMsgIndex].summaryLoading = false
+        messages.value[aiMsgIndex].summary = summaryRes.summary
+        scrollToBottom()
+      } catch (error: any) {
+        console.error('生成总结失败:', error)
+        messages.value[aiMsgIndex].summaryLoading = false
+        messages.value[aiMsgIndex].summaryError = true
+      }
     }
   } catch (error: any) {
     console.error(error)

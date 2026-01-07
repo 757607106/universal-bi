@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     
     # ========== Redis缓存配置 ==========
     REDIS_URL: str = "redis://localhost:6379/0"
-    REDIS_CACHE_TTL: int = 300  # 缓存过期时间（秒）
+    REDIS_CACHE_TTL: int = 300  # 结果缓存过期时间（秒）- 5分钟
+    SQL_CACHE_TTL: int = 604800  # SQL缓存过期时间（秒）- 7天
     
     # ========== 向量数据库配置 (PGVector) ==========
     # 用于Vanna训练数据存储
