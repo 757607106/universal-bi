@@ -1,7 +1,7 @@
 # Universal BI - 功能需求与完成状态文档
 
-> **文档版本**: v1.1  
-> **最后更新**: 2026-01-06  
+> **文档版本**: v1.2  
+> **最后更新**: 2026-01-07  
 > **目的**: 清晰记录项目需求与实现状态，用于功能追踪和任务规划
 
 ---
@@ -16,6 +16,7 @@
 | 仪表盘 (Dashboard) | ✅ 100% | ✅ 完成 | ✅ 完成 | CRUD 全覆盖 |
 | 用户认证 (SaaS) | ✅ 100% | ✅ 完成 | ✅ 完成 | JWT, 登录/注册/退出 |
 | 权限管理 (RBAC) | ✅ 100% | ✅ 完成 | ✅ 完成 | 超级管理员，用户状态管理 |
+| **部署与配置** | **✅ 100%** | **✅ 完成** | **✅ 完成** | **一键部署、Docker 支持** ✨ |
 | 查询缓存 | ❌ 0% | - | ⚠️ 配置已就绪 | 代码未集成 |
 
 **整体进度**: 核心 MVP 功能 + SaaS 基础功能 ✅ **100% 完成**
@@ -98,6 +99,43 @@
 
 ---
 
+### 6️⃣ 部署与配置管理 ✨
+
+#### 📝 需求描述
+实现一键部署和环境配置管理，支持多种部署方式，降低用户使用门槛。
+
+#### ✅ 已完成功能
+
+| 功能点 | 文件路径 | 状态 |
+|--------|---------|------|
+| 环境变量模板 | `.env.example` | ✅ 完成 |
+| Linux/macOS 部署脚本 | `setup.sh` | ✅ 完成 |
+| Windows 部署脚本 | `setup.bat` | ✅ 完成 |
+| Docker Compose 配置 | `docker-compose.yml` | ✅ 完成 |
+| 后端 Docker 镜像 | `Dockerfile.backend` | ✅ 完成 |
+| 前端 Docker 镜像 | `Dockerfile.frontend` | ✅ 完成 |
+| Nginx 配置 | `frontend/nginx.conf` | ✅ 完成 |
+| 数据库初始化脚本 | `backend/init_db.py` | ✅ 完成 |
+| SQL 初始化脚本 | `backend/migrations/000_init_schema.sql` | ✅ 完成 |
+| 快速开始指南 | `QUICKSTART.md` | ✅ 完成 |
+
+**核心特性**：
+- ✅ 支持开发模式和 Docker 模式两种部署方式
+- ✅ 自动检测操作系统和依赖环境
+- ✅ 一键安装所有依赖（Python、Node.js、Docker）
+- ✅ 自动创建和配置 .env 文件
+- ✅ 包含所有中间件服务（MySQL、PostgreSQL、Redis）
+- ✅ 健康检查和自动重启
+- ✅ 数据持久化和卷管理
+- ✅ 详细的部署文档和故障排查指南
+
+**实现文件**：
+- 部署脚本：`setup.sh`, `setup.bat`
+- Docker 配置：`docker-compose.yml`, `Dockerfile.backend`, `Dockerfile.frontend`
+- 文档：`QUICKSTART.md`, `README.md`
+
+---
+
 ## 🔐 非功能性需求状态
 
 ### ✅ 已完成
@@ -121,12 +159,3 @@
 
 1. **集成 Redis 缓存**：在 `VannaManager` 或 API 层实现查询结果缓存，减少 LLM 调用和 DB 查询。
 2. **完善测试**：增加 API 层的单元测试和集成测试。
-3. **UI 细节优化**：优化移动端适配和深色模式细节。
-
----
-
-## 📚 相关文档
-
-- [3_project_structure.md](./3_project_structure.md) - 项目结构
-- [REDIS_CACHE.md](../backend/REDIS_CACHE.md) - Redis 缓存说明
-- [SAAS_UPGRADE_GUIDE.md](../backend/SAAS_UPGRADE_GUIDE.md) - SaaS 功能说明

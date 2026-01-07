@@ -58,10 +58,14 @@ sql_app.db
 .env
 .env.local
 .env.*.local
+!.env.example
 
 # Logs
 logs/
 *.log
+
+# Docker
+start_dev.sh
 
 # ChromaDB
 chroma_db/

@@ -97,6 +97,10 @@ class VannaManager:
     _redis_client = None
     _redis_available = False
     
+    # Class-level ChromaDB client cache to prevent "different settings" error
+    _chroma_clients = {}  # {collection_name: vanna_instance}
+    _agent_instances = {}  # {collection_name: agent_instance}
+    
     @classmethod
     def _get_redis_client(cls):
         """
@@ -187,14 +191,21 @@ class VannaManager:
         """
         Initialize and return a Legacy Vanna instance for SQL generation.
         Uses the same configuration as Agent but with Legacy API.
+        Reuses existing client if already created to avoid ChromaDB conflicts.
         """
         collection_name = f"vec_ds_{dataset_id}"
         
+        # Return cached instance if exists
+        if collection_name in VannaManager._chroma_clients:
+            logger.debug(f"Reusing existing Vanna instance for collection {collection_name}")
+            return VannaManager._chroma_clients[collection_name]
+        
+        # Create new instance
         vn = VannaLegacy(config={
             'api_key': settings.DASHSCOPE_API_KEY,
             'model': settings.QWEN_MODEL,
-            'path': './chroma_db',
-            'n_results': 10,
+            'path': settings.CHROMA_PERSIST_DIR,
+            'n_results': settings.CHROMA_N_RESULTS,
             'client': 'persistent',
             'collection_name': collection_name,
             'api_base': 'https://dashscope.aliyuncs.com/compatible-mode/v1'
@@ -203,14 +214,24 @@ class VannaManager:
         # Enable data visibility for LLM to support intermediate_sql reasoning
         vn.allow_llm_to_see_data = True
         
+        # Cache the instance
+        VannaManager._chroma_clients[collection_name] = vn
+        logger.info(f"Created new Vanna instance for collection {collection_name}")
+        
         return vn
 
     @staticmethod
     def get_agent(dataset_id: int):
         """
         Initialize and return a configured Vanna Agent instance (Vanna 2.0).
+        Reuses existing agent if already created to avoid ChromaDB conflicts.
         """
         collection_name = f"vec_ds_{dataset_id}"
+        
+        # Return cached agent if exists
+        if collection_name in VannaManager._agent_instances:
+            logger.debug(f"Reusing existing Agent instance for collection {collection_name}")
+            return VannaManager._agent_instances[collection_name]
         
         # 1. LLM Service (Qwen via OpenAI compatible API)
         llm_service = OpenAILlmService(
@@ -220,10 +241,9 @@ class VannaManager:
         )
         
         # 2. Agent Memory (ChromaDB)
-        # We use a local persist directory for simplicity.
-        # In production, this should be configurable.
+        # ChromaDB配置从.env文件读取
         agent_memory = ChromaAgentMemory(
-            persist_directory="./chroma_db",
+            persist_directory=settings.CHROMA_PERSIST_DIR,
             collection_name=collection_name
         )
         
@@ -244,6 +264,10 @@ class VannaManager:
             agent_memory=agent_memory,
             llm_context_enhancer=enhancer
         )
+        
+        # Cache the agent instance
+        VannaManager._agent_instances[collection_name] = agent
+        logger.info(f"Created new Agent instance for collection {collection_name}")
         
         return agent
 

@@ -7,25 +7,25 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
-    full_name = Column(String)
+    email = Column(String(255), unique=True, index=True)
+    hashed_password = Column(String(255))
+    full_name = Column(String(255))
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)  # 平台超级管理员
     is_deleted = Column(Boolean, default=False)  # 软删除标记
-    role = Column(String, default="user")
+    role = Column(String(50), default="user")
 
 class DataSource(Base):
     __tablename__ = "datasources"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, index=True)
-    type = Column(String)  # postgresql, mysql
-    host = Column(String)
+    name = Column(String(255), index=True)
+    type = Column(String(50))  # postgresql, mysql
+    host = Column(String(255))
     port = Column(Integer)
-    username = Column(String)
-    password_encrypted = Column(String)
-    database_name = Column(String)
+    username = Column(String(255))
+    password_encrypted = Column(String(500))
+    database_name = Column(String(255))
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # 为 None 则为公共资源
     
     datasets = relationship("Dataset", back_populates="datasource")
@@ -36,11 +36,11 @@ class Dataset(Base):
     __tablename__ = "datasets"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, index=True)
+    name = Column(String(255), index=True)
     datasource_id = Column(Integer, ForeignKey("datasources.id"))
-    collection_name = Column(String, unique=True, index=True)
+    collection_name = Column(String(255), unique=True, index=True)
     schema_config = Column(JSON)  # e.g. ["users", "orders"]
-    training_status = Column(String, default="pending")  # pending, training, completed, failed
+    training_status = Column(String(50), default="pending")  # pending, training, completed, failed
     last_trained_at = Column(DateTime, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # 为 None 则为公共资源
     
@@ -53,8 +53,8 @@ class Dashboard(Base):
     __tablename__ = "dashboards"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, index=True)
-    description = Column(String, nullable=True)
+    name = Column(String(255), index=True)
+    description = Column(String(500), nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # 为 None 则为公共资源
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -68,10 +68,10 @@ class DashboardCard(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     dashboard_id = Column(Integer, ForeignKey("dashboards.id"))
-    title = Column(String)
+    title = Column(String(255))
     dataset_id = Column(Integer, ForeignKey("datasets.id"))
     sql = Column(Text)
-    chart_type = Column(String)  # bar/line/pie/table
+    chart_type = Column(String(50))  # bar/line/pie/table
     layout = Column(JSON, nullable=True)  # {x, y, w, h}
     created_at = Column(DateTime, default=datetime.utcnow)
     
@@ -84,7 +84,7 @@ class BusinessTerm(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     dataset_id = Column(Integer, ForeignKey("datasets.id"))
-    term = Column(String, index=True)  # 术语名称，如 "高净值客户"
+    term = Column(String(255), index=True)  # 术语名称，如 "高净值客户"
     definition = Column(Text)  # 定义，如 "年消费额 > 100w 的客户"
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # 为 None 则为公共资源
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -104,7 +104,7 @@ class ChatMessage(Base):
     question = Column(Text)
     answer = Column(Text, nullable=True)
     sql = Column(Text, nullable=True)
-    chart_type = Column(String, nullable=True)
+    chart_type = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     dataset = relationship("Dataset")

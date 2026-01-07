@@ -12,7 +12,14 @@ universal-bi/
 │       └── bi.mdc          # 项目规则文档
 ├── .git/                   # Git 版本控制
 ├── .gitignore              # Git 忽略文件配置
+├── .env.example            # 环境变量模板文件 ✨
+├── setup.sh                # Linux/macOS 一键部署脚本 ✨
+├── setup.bat               # Windows 一键部署脚本 ✨
+├── docker-compose.yml      # Docker Compose 配置 ✨
+├── Dockerfile.backend      # 后端 Docker 镜像配置 ✨
+├── Dockerfile.frontend     # 前端 Docker 镜像配置 ✨
 ├── README.md               # 项目说明文档
+├── QUICKSTART.md           # 快速开始指南 ✨
 ├── requirements.txt        # Python 依赖列表
 ├── backend/                # 后端项目（FastAPI + Vanna AI）
 ├── frontend/               # 前端项目（Vue 3 + TypeScript）
@@ -69,12 +76,16 @@ backend/
 │       ├── db_inspector.py        # 数据库连接与元数据检查
 │       └── vanna_manager.py       # Vanna AI SQL 生成核心服务
 ├── migrations/                    # 数据库迁移脚本
+│   ├── 000_init_schema.sql        # 数据库初始化 SQL ✨
+│   ├── 001_add_saas_features.sql
+│   └── 002_add_user_admin_fields.sql
 ├── scripts/                       # 工具脚本
 │   ├── generate_fake_data.py      # 生成测试数据脚本
 │   └── train_qa_fix.py            # QA 训练脚本
 ├── tests/                         # 测试文件
 │   ├── manual_scripts/            # 手动测试脚本 (原根目录 test_*.py)
 │   └── test_training_flow.py      # 训练流程测试
+├── init_db.py                     # 数据库初始化脚本 ✨
 ├── monitor_redis.py               # Redis 监控脚本
 ├── requirements.txt               # 后端依赖
 └── run_migration.py               # 迁移运行入口
@@ -142,6 +153,7 @@ frontend/
 ├── index.html                    # HTML 入口
 ├── package.json                  # NPM 依赖配置
 ├── vite.config.ts                # Vite 构建配置
+├── nginx.conf                    # Nginx 配置（Docker 生产环境） ✨
 ├── src/                          # 源代码目录
 │   ├── main.ts                   # Vue 应用入口
 │   ├── App.vue                   # 根组件
@@ -208,7 +220,70 @@ Routes:
 
 ---
 
-## � 文档索引
+## 🚀 部署相关配置
+
+### 环境配置文件
+
+**`.env.example` - 环境变量模板**
+- 包含所有必要的配置项说明
+- 支持多种数据库（MySQL/PostgreSQL/SQLite）
+- AI 模型配置（DASHSCOPE_API_KEY、QWEN_MODEL）
+- Redis 缓存配置
+- 向量数据库配置（ChromaDB、PGVector）
+
+### 一键部署脚本
+
+**`setup.sh` (Linux/macOS)**
+- 自动检测操作系统和依赖环境
+- 支持开发模式部署（本地安装依赖）
+- 支持 Docker 模式部署（容器化）
+- 自动创建 .env 配置文件
+- 生成开发环境启动脚本
+
+**`setup.bat` (Windows)**
+- Windows 完整支持
+- 功能与 setup.sh 一致
+- 彩色命令行输出
+
+### Docker 配置
+
+**`docker-compose.yml`**
+- 一键启动所有服务：MySQL、PostgreSQL、Redis、后端、前端
+- 包含健康检查和自动重启
+- 数据持久化配置
+- 服务依赖管理
+
+**`Dockerfile.backend`**
+- Python 3.10 基础镜像
+- 自动安装系统依赖（MySQL、PostgreSQL 客户端）
+- 使用阿里云镜像加速
+
+**`Dockerfile.frontend`**
+- 多阶段构建（Node.js builder + Nginx）
+- 生产优化配置
+- 自动构建和部署
+
+**`frontend/nginx.conf`**
+- SPA 路由支持
+- API 反向代理
+- Gzip 压缩
+- 静态资源缓存
+
+### 数据库初始化
+
+**`backend/init_db.py`**
+- 自动创建数据库表结构
+- 插入默认管理员账户
+- 支持幂等执行
+
+**`backend/migrations/000_init_schema.sql`**
+- MySQL/PostgreSQL 初始化脚本
+- Docker Compose 自动执行
+- 包含索引和约束
+
+---
+
+## 📚 文档索引
 
 所有文档均已归档至 `docs/` 目录：
 
@@ -226,6 +301,11 @@ Routes:
 - **前端文档** (`docs/frontend/`)
   - [TEST_CLARIFICATION.md](../frontend/TEST_CLARIFICATION.md) - 测试说明
 
+- **快速开始**
+  - [QUICKSTART.md](../../QUICKSTART.md) - 5 分钟快速部署指南 ✨
+  - [README.md](../../README.md) - 项目主文档
+
 ---
 
-> **维护说明**：本文档需要随项目结构变化及时更新。
+> **维护说明**：本文档需要随项目结构变化及时更新。  
+> **最后更新**: 2026-01-07 - 添加部署配置和环境管理相关内容

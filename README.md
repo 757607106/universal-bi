@@ -51,8 +51,55 @@ Universal BI 是一个基于 AI 的智能数据分析平台，用户只需用自
 - Python 3.8+
 - Node.js 16+
 - MySQL 5.7+ 或 PostgreSQL 12+
+- Redis 5.0+（用于缓存）
+- Docker & Docker Compose（可选，推荐）
 
-### 后端启动
+### 方式一：一键部署（推荐）
+
+使用自动化部署脚本，支持开发模式和 Docker 模式：
+
+#### 开发模式（本地运行）
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/757607106/universal-bi.git
+cd universal-bi
+
+# 2. 执行一键部署脚本
+bash setup.sh dev
+
+# 3. 编辑 .env 配置文件（重要！）
+vi .env
+# 必须配置 DASHSCOPE_API_KEY
+
+# 4. 启动服务
+bash start_dev.sh
+```
+
+#### Docker 模式（容器化部署）
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/757607106/universal-bi.git
+cd universal-bi
+
+# 2. 执行 Docker 部署
+bash setup.sh docker
+
+# 3. 编辑 .env 配置文件（重要！）
+vi .env
+# 必须配置 DASHSCOPE_API_KEY
+
+# 4. 启动服务
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+```
+
+### 方式二：手动部署
+
+#### 后端启动
 
 1. **克隆项目**
 
@@ -61,26 +108,34 @@ git clone https://github.com/757607106/universal-bi.git
 cd universal-bi
 ```
 
-2. **安装 Python 依赖**
+2. **配置环境变量**
+
+```bash
+# 复制环境变量模板
+cp .env.example .env
+
+# 编辑 .env 文件，至少配置以下项：
+# - DASHSCOPE_API_KEY（必填）
+# - SQLALCHEMY_DATABASE_URI（数据库连接）
+# - REDIS_URL（Redis 连接）
+vi .env
+```
+
+3. **安装 Python 依赖**
 
 ```bash
 cd backend
 pip install -r requirements.txt
 ```
 
-3. **配置环境变量**
+4. **初始化数据库**
 
-创建 `.env` 文件（或修改 `app/core/config.py`）：
-
-```env
-# DashScope API Key（通义千问）
-DASHSCOPE_API_KEY=your_dashscope_api_key_here
-
-# 数据库配置（可选，默认使用 SQLite）
-SQLALCHEMY_DATABASE_URI=sqlite:///./sql_app.db
+```bash
+# 创建数据库表并插入初始数据
+python init_db.py
 ```
 
-4. **启动后端服务**
+5. **启动后端服务**
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -88,7 +143,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 后端服务将运行在 `http://localhost:8000`
 
-### 前端启动
+#### 前端启动
 
 1. **安装依赖**
 
@@ -104,6 +159,47 @@ npm run dev
 ```
 
 前端服务将运行在 `http://localhost:3000`
+
+### 访问地址
+
+部署完成后，访问以下地址：
+
+- 🌐 **前端页面**：http://localhost:3000
+- 🔧 **后端 API**：http://localhost:8000
+- 📚 **API 文档**：http://localhost:8000/docs
+- 👤 **默认管理员**：用户名 `admin`，密码 `admin123`（请登录后立即修改）
+
+### 环境配置说明
+
+#### 必填配置
+
+```env
+# 通义千问 API Key（必填）
+# 获取地址：https://dashscope.console.aliyun.com/apiKey
+DASHSCOPE_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+#### 数据库配置（可选）
+
+```env
+# MySQL（推荐生产环境）
+SQLALCHEMY_DATABASE_URI=mysql+pymysql://root:password@localhost:3306/universal_bi?charset=utf8mb4
+
+# PostgreSQL
+SQLALCHEMY_DATABASE_URI=postgresql://postgres:password@localhost:5432/universal_bi
+
+# SQLite（默认，适合开发测试）
+SQLALCHEMY_DATABASE_URI=sqlite:///./sql_app.db
+```
+
+#### Redis 配置（可选）
+
+```env
+# Redis 缓存服务
+REDIS_URL=redis://localhost:6379/0
+# 如果设置了密码：
+REDIS_URL=redis://:password@localhost:6379/0
+```
 
 ## 📚 使用指南
 
@@ -153,6 +249,128 @@ python scripts/train_qa_fix.py
 ```
 
 编辑 `train_qa_fix.py` 中的 `qa_pairs` 列表，添加常见问题和对应的标准 SQL。
+
+## 🐳 Docker 常用命令
+
+```bash
+# 启动所有服务
+docker-compose up -d
+
+# 停止所有服务
+docker-compose down
+
+# 重启服务
+docker-compose restart
+
+# 查看服务状态
+docker-compose ps
+
+# 查看实时日志
+docker-compose logs -f
+
+# 查看特定服务日志
+docker-compose logs -f backend
+
+# 重新构建并启动
+docker-compose up -d --build
+
+# 进入容器执行命令
+docker exec -it universal-bi-backend bash
+
+# 清理所有数据（谨慎！）
+docker-compose down -v
+```
+
+## 🐞 故障排查
+
+### 1. 后端启动失败
+
+**问题**：数据库连接失败
+
+```bash
+# 检查数据库服务是否启动
+docker-compose ps mysql
+# 或
+mysql -h localhost -u root -p
+
+# 检查 .env 中的数据库连接配置
+cat .env | grep SQLALCHEMY_DATABASE_URI
+```
+
+**问题**：DASHSCOPE_API_KEY 未配置
+
+```bash
+# 确认 API Key 已配置
+cat .env | grep DASHSCOPE_API_KEY
+
+# 获取 API Key：https://dashscope.console.aliyun.com/apiKey
+```
+
+### 2. Docker 容器启动失败
+
+```bash
+# 查看容器状态
+docker-compose ps
+
+# 查看错误日志
+docker-compose logs backend
+docker-compose logs mysql
+
+# 重启服务
+docker-compose restart
+
+# 完全重新部署
+docker-compose down
+docker-compose up -d --build
+```
+
+### 3. Redis 连接问题
+
+```bash
+# 检查 Redis 服务
+redis-cli ping
+# 或 Docker 环境：
+docker-compose exec redis redis-cli ping
+
+# 检查 Redis 连接配置
+cat .env | grep REDIS_URL
+```
+
+### 4. 前端访问 404
+
+**问题**：前端页面刷新后 404
+
+解决：确认 Vue Router 配置为 `history` 模式，且后端支持 SPA 路由
+
+### 5. 性能问题
+
+```bash
+# 检查系统资源
+docker stats
+
+# 清理 Docker 缓存
+docker system prune -a
+
+# 清理 ChromaDB 向量数据（谨慎！）
+rm -rf backend/chroma_db
+```
+
+## 📝 更新日志
+
+### v0.2.0 (2026-01)
+
+- ✅ 新增一键部署脚本
+- ✅ 支持 Docker Compose 部署
+- ✅ 添加 Redis 缓存支持
+- ✅ 完善环境配置管理
+- ✅ 数据库自动初始化
+
+### v0.1.0 (2025-12)
+
+- ✅ 基本功能实现
+- ✅ Chat BI 自然语言查询
+- ✅ Dataset 管理和训练
+- ✅ Dashboard 看板功能
 
 ## 📂 项目结构
 
