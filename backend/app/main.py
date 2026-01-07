@@ -1,16 +1,37 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.endpoints import datasource, dataset, chat, dashboard, auth, admin
 from app.core.config import settings
+from app.core.redis import redis_service
 from app.db.session import engine
 from app.models import metadata
 
 # Create tables
 metadata.Base.metadata.create_all(bind=engine)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理 - 启动和关闭事件"""
+    # 启动事件
+    print("🚀 启动 Universal BI 服务...")
+    try:
+        await redis_service.init()
+    except Exception as e:
+        print(f"⚠️ Redis 初始化失败，将在无缓存模式下运行: {e}")
+    
+    yield
+    
+    # 关闭事件
+    print("🛑 关闭 Universal BI 服务...")
+    await redis_service.close()
+
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    openapi_url=f"{settings.API_V1_STR}/openapi.json"
+    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    lifespan=lifespan
 )
 
 # Set all CORS enabled origins

@@ -11,7 +11,8 @@ export interface ChatResponse {
   } | null
   chart_type: string
   steps?: string[]  // Execution steps tracking
-  from_cache?: boolean  // Whether result is from cache
+  from_cache?: boolean  // Whether result is from cache (deprecated, use is_cached)
+  is_cached?: boolean  // Whether result is from cache
   insight?: string  // Business insight from analyst agent
 }
 
@@ -39,8 +40,8 @@ export interface FeedbackResponse {
   message: string
 }
 
-export const sendChat = async (data: { dataset_id: number, question: string }) => {
-  const responseData = await http.post<any, { dataset_id: number, question: string }>('/chat/', data)
+export const sendChat = async (data: { dataset_id: number, question: string, use_cache?: boolean }) => {
+  const responseData = await http.post<any, { dataset_id: number, question: string, use_cache?: boolean }>('/chat/', data)
   // 直接返回后端数据，保留原始结构
   return {
     answer_text: responseData.answer_text || responseData.summary,
@@ -50,7 +51,8 @@ export const sendChat = async (data: { dataset_id: number, question: string }) =
     data: null,  // 不再包装
     chart_type: responseData.chart_type,
     steps: responseData.steps || [],
-    from_cache: responseData.from_cache || false,
+    from_cache: responseData.from_cache || false,  // 兼容旧字段
+    is_cached: responseData.is_cached || false,  // 新字段
     insight: responseData.insight  // 业务分析
   } as ChatResponse
 }

@@ -80,12 +80,17 @@
           <!-- Text Bubble -->
           <div
             :class="[
-              'text-sm transition-all',
+              'text-sm transition-all relative',
               msg.type === 'user'
                 ? 'bg-blue-600 text-white p-4 rounded-3xl rounded-tr-sm shadow-md shadow-blue-500/10'
                 : 'bg-white dark:bg-slate-800 text-gray-800 dark:text-slate-200 p-6 rounded-3xl rounded-tl-sm border border-gray-200 dark:border-slate-700 shadow-sm'
             ]"
           >
+            <!-- 缓存标识：只在 AI 回复且缓存命中时显示 -->
+            <div v-if="msg.type === 'ai' && msg.isCached && !msg.loading" class="absolute top-2 right-2 flex items-center gap-1.5 px-2.5 py-1 bg-gradient-to-r from-yellow-50 to-amber-50 dark:from-yellow-900/30 dark:to-amber-900/30 rounded-full border border-yellow-200 dark:border-yellow-700/50 shadow-sm">
+              <el-icon class="text-yellow-500 dark:text-yellow-400 text-sm"><Lightning /></el-icon>
+              <span class="text-[10px] font-semibold text-yellow-700 dark:text-yellow-400 uppercase tracking-wide">Cached</span>
+            </div>
             <div v-if="msg.loading" class="space-y-3">
               <!-- Fake Loading Steps -->
               <div class="flex items-center gap-2 text-gray-500 dark:text-slate-400">
@@ -236,7 +241,7 @@
                     </div>
                     
                     <!-- Feedback Buttons -->
-                    <div class="flex items-center gap-3 mt-3 pt-3">
+                    <div class="flex items-center gap-3 mt-3 pt-3 border-t border-gray-100 dark:border-slate-800">
                       <span class="text-xs text-gray-400 dark:text-slate-500">结果评价：</span>
                       <div class="flex gap-2">
                         <el-button
@@ -258,6 +263,18 @@
                             class="!bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-700 !text-gray-400 dark:!text-slate-400 hover:!text-red-500 dark:hover:!text-red-400 hover:!border-red-200 dark:hover:!border-red-500/50"
                         >
                             <el-icon><CloseBold /></el-icon>
+                        </el-button>
+                        <!-- 重新生成按钮 -->
+                        <el-button
+                            size="small"
+                            @click="handleRegenerate(msg, index)"
+                            :loading="msg.regenerating"
+                            class="!bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-700 !text-gray-400 dark:!text-slate-400 hover:!text-blue-500 dark:hover:!text-cyan-400 hover:!border-blue-200 dark:hover:!border-cyan-500/50"
+                        >
+                            <template #icon>
+                              <el-icon><Refresh /></el-icon>
+                            </template>
+                            重新生成
                         </el-button>
                       </div>
                     </div>
@@ -399,7 +416,9 @@ import {
   PieChart,
   DataLine,
   DataBoard,
-  DataAnalysis
+  DataAnalysis,
+  Lightning,
+  Refresh
 } from '@element-plus/icons-vue'
 import { getDatasetList, type Dataset } from '@/api/dataset'
 import { sendChat, submitFeedback, generateSummary } from '@/api/chat'
@@ -423,6 +442,8 @@ interface Message {
   summaryLoading?: boolean  // 总结加载中 (已废弃，保留兼容)
   summaryError?: boolean  // 总结加载失败 (已废弃，保留兼容)
   insight?: string  // 分析师 Agent 的业务洞察
+  isCached?: boolean  // 是否从缓存读取
+  regenerating?: boolean  // 是否正在重新生成
 }
 
 const currentDatasetId = ref<number | undefined>(undefined)
@@ -613,7 +634,8 @@ const handleSend = async () => {
       steps: res.steps,
       error: false,
       isSystemError: false,
-      insight: res.insight  // 直接使用后端同步返回的分析
+      insight: res.insight,  // 直接使用后端同步返回的分析
+      isCached: res.is_cached || res.from_cache || false  // 缓存标识
     }
   } catch (error: any) {
     console.error(error)
@@ -991,6 +1013,58 @@ const handleSubmitCorrection = async () => {
     ElMessage.error('修正提交失败')
   } finally {
     submittingFeedback.value = false
+  }
+}
+
+// 重新生成处理
+ const handleRegenerate = async (msg: Message, index: number) => {
+  if (!msg.question || !msg.datasetId) {
+    ElMessage.warning('无法重新生成，缺少必要信息')
+    return
+  }
+  
+  // 设置重新生成状态
+  messages.value[index].regenerating = true
+  
+  try {
+    // 调用 API，设置 use_cache = false 强制刷新
+    const res = await sendChat({
+      dataset_id: msg.datasetId,
+      question: msg.question,
+      use_cache: false  // 关键：禁用缓存
+    })
+    
+    const isClarification = res.chart_type === 'clarification'
+    
+    const chartData = (res.columns && res.rows) ? {
+      columns: res.columns,
+      rows: res.rows
+    } : undefined
+    
+    // 更新消息
+    messages.value[index] = {
+      type: 'ai',
+      loading: false,
+      content: res.answer_text || undefined,
+      sql: res.sql || undefined,
+      chartData: chartData,
+      chartType: res.chart_type,
+      question: msg.question,
+      datasetId: msg.datasetId,
+      steps: res.steps,
+      error: false,
+      isSystemError: false,
+      insight: res.insight,
+      isCached: false,  // 重新生成的不会是缓存结果
+      regenerating: false
+    }
+    
+    ElMessage.success('已重新生成')
+    scrollToBottom()
+  } catch (error: any) {
+    console.error(error)
+    ElMessage.error('重新生成失败')
+    messages.value[index].regenerating = false
   }
 }
 </script>

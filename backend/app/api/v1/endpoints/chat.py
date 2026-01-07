@@ -32,7 +32,8 @@ async def chat(
         result = await VannaManager.generate_result(
             dataset_id=request.dataset_id,
             question=request.question,
-            db_session=db
+            db_session=db,
+            use_cache=request.use_cache  # 传递缓存控制参数
         )
         return result
     except ValueError as e:

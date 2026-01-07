@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, inspect
 from app.models.metadata import Dataset, TrainingLog
 from app.core.config import settings
+from app.core.redis import redis_service, generate_cache_key
 from app.services.db_inspector import DBInspector
 from datetime import datetime, date
 from decimal import Decimal
@@ -13,8 +14,6 @@ import uuid
 import json
 import hashlib
 from openai import OpenAI as OpenAIClient
-import redis
-from redis.exceptions import RedisError
 
 # Vanna 2.0 Imports
 from vanna.core import Agent, ToolRegistry, ToolContext
@@ -145,10 +144,6 @@ class SimpleUserResolver(UserResolver):
         return User(id="admin", email="admin@example.com", group_memberships=['admin'])
 
 class VannaManager:
-    # Class-level Redis client for connection reuse
-    _redis_client = None
-    _redis_available = False
-    
     # Class-level ChromaDB client cache to prevent "different settings" error
     _chroma_clients = {}  # {collection_name: vanna_instance}
     _agent_instances = {}  # {collection_name: agent_instance}
@@ -157,112 +152,68 @@ class VannaManager:
     _global_chroma_client = None
     
     @classmethod
-    def _get_redis_client(cls):
+    async def clear_cache_async(cls, dataset_id: int) -> int:
         """
-        Get or initialize Redis client with connection pooling.
-        Returns None if Redis is unavailable (graceful degradation).
-        """
-        if cls._redis_client is None:
-            try:
-                cls._redis_client = redis.from_url(
-                    settings.REDIS_URL,
-                    decode_responses=True,
-                    socket_connect_timeout=2,
-                    socket_timeout=2
-                )
-                # Test connection
-                cls._redis_client.ping()
-                cls._redis_available = True
-                logger.info(f"Redis connected successfully: {settings.REDIS_URL}")
-            except RedisError as e:
-                logger.warning(f"Redis connection failed: {e}. Cache disabled.")
-                cls._redis_client = None
-                cls._redis_available = False
-            except Exception as e:
-                logger.warning(f"Unexpected error connecting to Redis: {e}. Cache disabled.")
-                cls._redis_client = None
-                cls._redis_available = False
+        清除指定数据集的所有缓存查询（异步版本）
+        清除结果缓存和 SQL 缓存
+        当数据集重新训练或术语更新时使用
         
-        return cls._redis_client if cls._redis_available else None
-    
-    @staticmethod
-    def _generate_cache_key(dataset_id: int, question: str) -> str:
+        Args:
+            dataset_id: 数据集ID
+            
+        Returns:
+            int: 删除的键数量, -1 表示 Redis 不可用
         """
-        Generate cache key for a query.
-        Format: bi:cache:{dataset_id}:{hash(question)}
-        """
-        question_hash = hashlib.md5(question.encode('utf-8')).hexdigest()
-        return f"bi:cache:{dataset_id}:{question_hash}"
-    
-    @staticmethod
-    def _generate_sql_cache_key(dataset_id: int, question: str) -> str:
-        """
-        Generate SQL cache key for a query.
-        Format: bi:sql_cache:{dataset_id}:{hash(question)}
-        """
-        question_hash = hashlib.md5(question.encode('utf-8')).hexdigest()
-        return f"bi:sql_cache:{dataset_id}:{question_hash}"
-    
-    @staticmethod
-    def _serialize_cache_data(result: dict) -> str:
-        """
-        Serialize result data to JSON string for Redis storage.
-        """
-        return json.dumps(result, ensure_ascii=False)
-    
-    @staticmethod
-    def _deserialize_cache_data(data: str) -> dict:
-        """
-        Deserialize JSON string from Redis to result dict.
-        """
-        return json.loads(data)
+        try:
+            total_deleted = 0
+            
+            # 注意：由于 redis_service 不提供 keys() 方法，我们需要手动删除
+            # 这里我们使用模式匹配来删除缓存
+            # 对于生产环境，建议维护一个缓存键的集合以便批量删除
+            
+            # 方案：使用 Redis 的原生客户端进行批量删除（临时方案）
+            # 生产环境建议使用缓存键集合管理
+            if redis_service.redis_client:
+                # 1. 清除结果缓存
+                result_pattern = f"bi:cache:{dataset_id}:*"
+                async for key in redis_service.redis_client.scan_iter(match=result_pattern):
+                    await redis_service.delete(key)
+                    total_deleted += 1
+                
+                # 2. 清除 SQL 缓存
+                sql_pattern = f"bi:sql_cache:{dataset_id}:*"
+                async for key in redis_service.redis_client.scan_iter(match=sql_pattern):
+                    await redis_service.delete(key)
+                    total_deleted += 1
+                
+                logger.info(f"Cleared {total_deleted} cache entries for dataset {dataset_id}")
+            else:
+                logger.warning("Redis unavailable, cannot clear cache")
+                return -1
+            
+            return total_deleted
+        except Exception as e:
+            logger.error(f"Failed to clear cache for dataset {dataset_id}: {e}")
+            return -1
     
     @classmethod
     def clear_cache(cls, dataset_id: int) -> int:
         """
-        Clear all cached queries for a specific dataset.
-        Clears both result cache and SQL cache.
-        Useful when dataset is retrained or terms are updated.
+        清除指定数据集的所有缓存查询（同步包装器）
         
         Args:
-            dataset_id: Dataset ID to clear cache for
+            dataset_id: 数据集ID
             
         Returns:
-            int: Number of keys deleted, -1 if Redis unavailable
+            int: 删除的键数量, -1 表示 Redis 不可用
         """
-        redis_client = cls._get_redis_client()
-        if not redis_client:
-            logger.warning("Redis unavailable, cannot clear cache")
-            return -1
-        
         try:
-            total_deleted = 0
-            
-            # 1. Clear result cache
-            result_pattern = f"bi:cache:{dataset_id}:*"
-            result_keys = redis_client.keys(result_pattern)
-            if result_keys:
-                deleted = redis_client.delete(*result_keys)
-                total_deleted += deleted
-                logger.info(f"Cleared {deleted} result cache entries for dataset {dataset_id}")
-            
-            # 2. Clear SQL cache
-            sql_pattern = f"bi:sql_cache:{dataset_id}:*"
-            sql_keys = redis_client.keys(sql_pattern)
-            if sql_keys:
-                deleted = redis_client.delete(*sql_keys)
-                total_deleted += deleted
-                logger.info(f"Cleared {deleted} SQL cache entries for dataset {dataset_id}")
-            
-            if total_deleted > 0:
-                logger.info(f"Total cleared {total_deleted} cache entries for dataset {dataset_id}")
-            else:
-                logger.info(f"No cached entries found for dataset {dataset_id}")
-            
-            return total_deleted
-        except RedisError as e:
-            logger.error(f"Failed to clear cache for dataset {dataset_id}: {e}")
-            return -1
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        return loop.run_until_complete(cls.clear_cache_async(dataset_id))
     
     @staticmethod
     def _get_global_chroma_client():
@@ -963,13 +914,13 @@ class VannaManager:
             raise ValueError(f"训练问答对失败: {str(e)}")
 
     @staticmethod
-    async def generate_result(dataset_id: int, question: str, db_session: Session, allow_cache: bool = True):
+    async def generate_result(dataset_id: int, question: str, db_session: Session, use_cache: bool = True):
         """
         Generate SQL and execute it with intelligent multi-round dialogue (Auto-Reflection Loop).
         Now with Redis-based query caching for improved performance.
         
         Features:
-        1. Redis-based query caching with configurable TTL
+        1. Redis-based SQL caching with 24-hour TTL
         2. LLM-driven intermediate SQL detection and execution
         3. Intelligent clarification generation when ambiguous
         4. Graceful text-only responses (no exceptions for non-SQL)
@@ -980,95 +931,70 @@ class VannaManager:
             dataset_id: Dataset ID
             question: User's question
             db_session: Database session
-            allow_cache: Whether to use cache (default: True)
+            use_cache: Whether to use cache (default: True)
             
         Returns:
             dict: Result with sql, columns, rows, chart_type, etc.
-                  Includes 'from_cache' flag when result is from cache
+                  Includes 'is_cached' flag when result is from cache
         """
         execution_steps = []
         
-        # === Step 0: SQL Cache Check (v1.3 性能优化) ===
-        if allow_cache:
-            redis_client = VannaManager._get_redis_client()
-            sql_cache_key = VannaManager._generate_sql_cache_key(dataset_id, question)
+        # === Step 0: SQL Cache Check ===
+        # 缓存策略：先检查 SQL 缓存，命中后重新执行 SQL 获取最新数据
+        if use_cache:
+            sql_cache_key = generate_cache_key("bi:sql_cache", dataset_id, question)
             
-            if redis_client:
-                try:
-                    cached_sql = redis_client.get(sql_cache_key)
-                    if cached_sql:
-                        logger.info(f"SQL cache hit for dataset {dataset_id}, question: {question[:50]}...")
-                        execution_steps.append("SQL缓存命中")
+            try:
+                cached_sql = await redis_service.get(sql_cache_key)
+                if cached_sql:
+                    logger.info(f"⚡ SQL缓存命中 for dataset {dataset_id}, question: {question[:50]}...")
+                    execution_steps.append("⚡ SQL缓存命中")
+                    
+                    # 关键点：拿到缓存的 SQL 后，重新执行查询获取最新数据
+                    try:
+                        # 获取 dataset 和 datasource
+                        stmt = select(Dataset).options(selectinload(Dataset.datasource)).where(Dataset.id == dataset_id)
+                        result = db_session.execute(stmt)
+                        dataset = result.scalars().first()
                         
-                        # 关键点：拿到缓存的 SQL 后，重新执行查询获取最新数据
-                        try:
-                            # 获取 dataset 和 datasource
-                            stmt = select(Dataset).options(selectinload(Dataset.datasource)).where(Dataset.id == dataset_id)
-                            result = db_session.execute(stmt)
-                            dataset = result.scalars().first()
+                        if not dataset or not dataset.datasource:
+                            # 如果 dataset 或 datasource 不存在，这个缓存已经无效了
+                            logger.warning(f"Dataset {dataset_id} or datasource not found, invalidating SQL cache")
+                            await redis_service.delete(sql_cache_key)
+                            execution_steps.append("缓存已失效，进入常规流程")
+                        else:
+                            # 重新执行 SQL 查询
+                            engine = DBInspector.get_engine(dataset.datasource)
+                            df = pd.read_sql(cached_sql, engine)
+                            execution_steps.append(f"重新执行查询，返回 {len(df)} 行")
                             
-                            if not dataset or not dataset.datasource:
-                                # 如果 dataset 或 datasource 不存在，这个缓存已经无效了
-                                logger.warning(f"Dataset {dataset_id} or datasource not found, invalidating SQL cache")
-                                redis_client.delete(sql_cache_key)
-                                execution_steps.append("缓存已失效，进入常规流程")
-                            else:
-                                # 重新执行 SQL 查询
-                                engine = DBInspector.get_engine(dataset.datasource)
-                                df = pd.read_sql(cached_sql, engine)
-                                execution_steps.append(f"SQL缓存命中，重新执行查询，返回 {len(df)} 行")
-                                
-                                # 推断图表类型
-                                chart_type = VannaManager._infer_chart_type(df)
-                                
-                                # 序列化数据
-                                cleaned_rows = VannaManager._serialize_dataframe(df)
-                                
-                                return {
-                                    "sql": cached_sql,
-                                    "columns": df.columns.tolist(),
-                                    "rows": cleaned_rows,
-                                    "chart_type": chart_type,
-                                    "summary": None,
-                                    "steps": execution_steps,
-                                    "from_cache": True,
-                                    "cache_type": "sql"  # 标记是 SQL 级缓存
-                                }
-                        except Exception as e:
-                            logger.warning(f"Cached SQL execution failed: {e}. Proceeding with full generation.")
-                            execution_steps.append(f"缓存 SQL 执行失败: {str(e)[:50]}，进入常规流程")
-                            # 删除无效缓存
-                            redis_client.delete(sql_cache_key)
-                    else:
-                        logger.debug(f"SQL cache miss for dataset {dataset_id}")
-                        execution_steps.append("SQL缓存未命中")
-                except RedisError as e:
-                    logger.warning(f"SQL cache read failed: {e}. Proceeding without cache.")
-                    execution_steps.append(f"SQL缓存读取失败: {str(e)[:50]}")
-        
-        # === Step 1: 原有结果缓存检查 (保留兼容性) ===
-        # 注意：这里的结果缓存会缓存完整的查询结果，而 SQL 缓存只缓存 SQL
-        # 两种缓存可以共存，结果缓存 TTL 更短（5分钟），SQL 缓存 TTL 更长（7天）
-        if allow_cache:
-            redis_client = VannaManager._get_redis_client()
-            cache_key = VannaManager._generate_cache_key(dataset_id, question)
-            
-            if redis_client:
-                try:
-                    cached_data = redis_client.get(cache_key)
-                    if cached_data:
-                        logger.info(f"Cache hit for dataset {dataset_id}, question: {question[:50]}...")
-                        result = VannaManager._deserialize_cache_data(cached_data)
-                        result['from_cache'] = True
-                        # 不要累加 steps，直接替换为缓存标记
-                        result['steps'] = ["从缓存返回结果"]
-                        return result
-                    else:
-                        logger.debug(f"Cache miss for dataset {dataset_id}")
-                        execution_steps.append("缓存未命中")
-                except RedisError as e:
-                    logger.warning(f"Cache read failed: {e}. Proceeding without cache.")
-                    execution_steps.append(f"缓存读取失败: {str(e)[:50]}")
+                            # 推断图表类型
+                            chart_type = VannaManager._infer_chart_type(df)
+                            
+                            # 序列化数据
+                            cleaned_rows = VannaManager._serialize_dataframe(df)
+                            
+                            return {
+                                "sql": cached_sql,
+                                "columns": df.columns.tolist(),
+                                "rows": cleaned_rows,
+                                "chart_type": chart_type,
+                                "summary": None,
+                                "steps": execution_steps,
+                                "is_cached": True,  # 标记从缓存读取
+                                "from_cache": True  # 兼容旧字段
+                            }
+                    except Exception as e:
+                        logger.warning(f"Cached SQL execution failed: {e}. Proceeding with full generation.")
+                        execution_steps.append(f"缓存 SQL 执行失败: {str(e)[:50]}，进入常规流程")
+                        # 删除无效缓存
+                        await redis_service.delete(sql_cache_key)
+                else:
+                    logger.debug(f"SQL cache miss for dataset {dataset_id}")
+                    execution_steps.append("SQL缓存未命中")
+            except Exception as e:
+                logger.warning(f"SQL cache read failed: {e}. Proceeding without cache.")
+                execution_steps.append(f"SQL缓存读取失败: {str(e)[:50]}")
         
         try:
             # === Step A: Initial Setup ===
@@ -1272,37 +1198,17 @@ class VannaManager:
                     }
                     
                     # === Step D: Write to Cache ===
-                    if allow_cache:
-                        redis_client = VannaManager._get_redis_client()
-                        if redis_client:
-                            # 1. 写入 SQL 缓存 (v1.3 性能优化 - 保存 SQL，7天 TTL)
-                            try:
-                                sql_cache_key = VannaManager._generate_sql_cache_key(dataset_id, question)
-                                redis_client.setex(
-                                    sql_cache_key,
-                                    settings.SQL_CACHE_TTL,
-                                    cleaned_sql  # 直接存储 SQL 字符串
-                                )
-                                logger.info(f"SQL cached for dataset {dataset_id}, TTL: {settings.SQL_CACHE_TTL}s (7 days)")
-                                execution_steps.append(f"SQL已缓存 (TTL: {settings.SQL_CACHE_TTL}s)")
-                            except RedisError as e:
-                                logger.warning(f"SQL cache write failed: {e}.")
-                                execution_steps.append(f"SQL缓存写入失败: {str(e)[:50]}")
-                            
-                            # 2. 写入结果缓存 (原有逻辑，保留兼容性，5分钟 TTL)
-                            try:
-                                cache_key = VannaManager._generate_cache_key(dataset_id, question)
-                                cache_data = VannaManager._serialize_cache_data(result)
-                                redis_client.setex(
-                                    cache_key,
-                                    settings.REDIS_CACHE_TTL,
-                                    cache_data
-                                )
-                                logger.info(f"Result cached for dataset {dataset_id}, TTL: {settings.REDIS_CACHE_TTL}s")
-                                execution_steps.append(f"结果已缓存 (TTL: {settings.REDIS_CACHE_TTL}s)")
-                            except RedisError as e:
-                                logger.warning(f"Result cache write failed: {e}. Result returned without caching.")
-                                execution_steps.append(f"结果缓存写入失败: {str(e)[:50]}")
+                    # 写入 SQL 缓存，24小时 TTL
+                    if use_cache:
+                        try:
+                            sql_cache_key = generate_cache_key("bi:sql_cache", dataset_id, question)
+                            # 24小时 = 86400 秒
+                            await redis_service.set(sql_cache_key, cleaned_sql, expire=86400)
+                            logger.info(f"✅ SQL 已缓存 for dataset {dataset_id}, TTL: 24h")
+                            execution_steps.append("SQL已缓存 (TTL: 24h)")
+                        except Exception as e:
+                            logger.warning(f"SQL cache write failed: {e}.")
+                            execution_steps.append(f"SQL缓存写入失败: {str(e)[:50]}")
                     
                     return result
                     
