@@ -95,8 +95,61 @@ export interface TrainingDataResponse {
   page_size: number
 }
 
-export const getTrainingData = async (id: number, page: number = 1, page_size: number = 20) => {
-  return await http.get<TrainingDataResponse, any>(`/datasets/${id}/training/data?page=${page}&page_size=${page_size}`)
+export const getTrainingData = async (id: number, page: number = 1, page_size: number = 20, type_filter?: string) => {
+  const params = new URLSearchParams({
+    page: page.toString(),
+    page_size: page_size.toString()
+  })
+  if (type_filter && type_filter !== 'all') {
+    params.append('type_filter', type_filter)
+  }
+  return await http.get<TrainingDataResponse, any>(`/datasets/${id}/training/data?${params.toString()}`)
+}
+
+// Business Term APIs
+export interface BusinessTerm {
+  id: number
+  dataset_id: number
+  term: string
+  definition: string
+  created_at: string
+}
+
+export interface BusinessTermCreate {
+  term: string
+  definition: string
+}
+
+export const getBusinessTerms = async (datasetId: number) => {
+  return await http.get<BusinessTerm[], any>(`/datasets/${datasetId}/terms`)
+}
+
+export const addBusinessTerm = async (datasetId: number, data: BusinessTermCreate) => {
+  return await http.post<BusinessTerm, BusinessTermCreate>(`/datasets/${datasetId}/terms`, data)
+}
+
+export const deleteBusinessTerm = async (termId: number) => {
+  return await http.delete<{ message: string }, any>(`/datasets/terms/${termId}`)
+}
+
+// QA Training APIs
+export interface TrainQARequest {
+  question: string
+  sql: string
+}
+
+export const trainQAPair = async (datasetId: number, data: TrainQARequest) => {
+  return await http.post<{ message: string }, TrainQARequest>(`/datasets/${datasetId}/training/qa`, data)
+}
+
+// Documentation Training APIs  
+export interface TrainDocRequest {
+  content: string
+  doc_type?: string
+}
+
+export const trainDocumentation = async (datasetId: number, data: TrainDocRequest) => {
+  return await http.post<{ message: string }, TrainDocRequest>(`/datasets/${datasetId}/training/doc`, data)
 }
 
 export const updateModelingConfig = async (id: number, config: any) => {

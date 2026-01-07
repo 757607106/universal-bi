@@ -55,10 +55,14 @@
               <span class="text-gray-600 dark:text-slate-300">{{ formatDate(dataset.last_train_at || dataset.last_trained_at) }}</span>
             </div>
             
-            <div class="pt-4 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2">
+            <div class="pt-4 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2 flex-wrap">
               <el-button size="small" @click="handleGoModeling(dataset)" class="!bg-purple-50 dark:!bg-purple-500/10 !border-purple-200 dark:!border-purple-500/50 !text-purple-600 dark:!text-purple-400 hover:!bg-purple-100 dark:hover:!bg-purple-500/20">
                 <el-icon class="mr-1"><MagicStick /></el-icon>
                 可视化建模
+              </el-button>
+              <el-button size="small" @click="handleOpenBusinessTermManager(dataset)" class="!bg-orange-50 dark:!bg-orange-500/10 !border-orange-200 dark:!border-orange-500/50 !text-orange-600 dark:!text-orange-400 hover:!bg-orange-100 dark:hover:!bg-orange-500/20">
+                <el-icon class="mr-1"><Collection /></el-icon>
+                业务术语
               </el-button>
               <el-button size="small" @click="handleViewTrainingData(dataset)" class="!bg-green-50 dark:!bg-green-500/10 !border-green-200 dark:!border-green-500/50 !text-green-600 dark:!text-green-400 hover:!bg-green-100 dark:hover:!bg-green-500/20">
                 <el-icon class="mr-1"><Files /></el-icon>
@@ -97,6 +101,12 @@
         v-model="trainingDataDialogVisible"
         :dataset-id="selectedDatasetId"
       />
+
+      <BusinessTermManager
+        v-model="businessTermManagerVisible"
+        :dataset-id="selectedDatasetId"
+        @refresh="fetchDatasets"
+      />
     </div>
   </div>
 </template>
@@ -104,17 +114,19 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Plus, Files, Loading, MagicStick, View, CircleCheck, CircleClose, VideoPause, Clock, Delete } from '@element-plus/icons-vue'
+import { Plus, Files, Loading, MagicStick, View, CircleCheck, CircleClose, VideoPause, Clock, Delete, Collection } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getDatasetList, trainDataset, deleteDataset, type Dataset } from '@/api/dataset'
 import DatasetWizard from './components/DatasetWizard.vue'
 import TrainingProgressDialog from './components/TrainingProgressDialog.vue'
 import TrainingDataDialog from './components/TrainingDataDialog.vue'
+import BusinessTermManager from './components/BusinessTermManager.vue'
 
 const router = useRouter()
 const wizardVisible = ref(false)
 const progressDialogVisible = ref(false)
 const trainingDataDialogVisible = ref(false)
+const businessTermManagerVisible = ref(false)
 const selectedDatasetId = ref(0)
 const datasetList = ref<Dataset[]>([])
 let pollingTimer: ReturnType<typeof setInterval> | null = null
@@ -169,6 +181,12 @@ const handleShowProgress = (dataset: Dataset) => {
 const handleViewTrainingData = (dataset: Dataset) => {
   selectedDatasetId.value = dataset.id
   trainingDataDialogVisible.value = true
+}
+
+// 打开业务术语管理
+const handleOpenBusinessTermManager = (dataset: Dataset) => {
+  selectedDatasetId.value = dataset.id
+  businessTermManagerVisible.value = true
 }
 
 const handleDelete = async (dataset: Dataset) => {

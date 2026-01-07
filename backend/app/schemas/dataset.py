@@ -117,3 +117,16 @@ class TrainingDataResponse(BaseModel):
     items: List[TrainingDataItem]
     page: int
     page_size: int
+
+
+# QA Training Schemas
+class TrainQARequest(BaseModel):
+    """Request to train a QA pair"""
+    question: str
+    sql: str
+
+
+class TrainDocRequest(BaseModel):
+    """Request to train a documentation"""
+    content: str
+    doc_type: Optional[str] = "general"  # general, business_rule, etc.

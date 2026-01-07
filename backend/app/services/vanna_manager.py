@@ -43,9 +43,39 @@ class VannaLegacy(ChromaDB_VectorStore, OpenAI_Chat):
     """
     Legacy Vanna class for SQL generation
     Combines ChromaDB vector store with OpenAI chat
+    使用传入的 chroma_client 避免重复创建导致的冲突
     """
-    def __init__(self, config=None):
-        ChromaDB_VectorStore.__init__(self, config=config)
+    def __init__(self, config=None, chroma_client=None):
+        # 如果传入了 chroma_client，直接使用而不调用父类的 __init__
+        if chroma_client is not None:
+            import chromadb.utils.embedding_functions as embedding_functions
+            
+            self.chroma_client = chroma_client
+            collection_name = config.get('collection_name', 'vanna_collection') if config else 'vanna_collection'
+            self.n_results = config.get('n_results', 10) if config else 10
+            
+            # 初始化 embedding function
+            self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
+            
+            # 创建 vanna 所需的所有 collection
+            self.ddl_collection = self.chroma_client.get_or_create_collection(
+                name=f"{collection_name}_ddl",
+                embedding_function=self.embedding_function,
+                metadata={"hnsw:space": "cosine"}
+            )
+            self.documentation_collection = self.chroma_client.get_or_create_collection(
+                name=f"{collection_name}_documentation",
+                embedding_function=self.embedding_function,
+                metadata={"hnsw:space": "cosine"}
+            )
+            self.sql_collection = self.chroma_client.get_or_create_collection(
+                name=f"{collection_name}_sql",
+                embedding_function=self.embedding_function,
+                metadata={"hnsw:space": "cosine"}
+            )
+        else:
+            # 回退到原始初始化方式
+            ChromaDB_VectorStore.__init__(self, config=config)
         
         # Initialize with custom OpenAI client
         if config and 'api_base' in config:
@@ -219,6 +249,19 @@ class VannaManager:
             return -1
     
     @staticmethod
+    def _get_global_chroma_client():
+        """
+        获取全局单例ChromaDB客户端，确保所有实例使用相同配置
+        """
+        if VannaManager._global_chroma_client is None:
+            import chromadb
+            VannaManager._global_chroma_client = chromadb.PersistentClient(
+                path=settings.CHROMA_PERSIST_DIR
+            )
+            logger.info(f"Initialized global ChromaDB client at {settings.CHROMA_PERSIST_DIR}")
+        return VannaManager._global_chroma_client
+    
+    @staticmethod
     def get_legacy_vanna(dataset_id: int):
         """
         Initialize and return a Legacy Vanna instance for SQL generation.
@@ -232,61 +275,29 @@ class VannaManager:
             logger.debug(f"Reusing existing Vanna instance for collection {collection_name}")
             return VannaManager._chroma_clients[collection_name]
         
-        try:
-            # Create new instance
-            vn = VannaLegacy(config={
+        # 获取全局客户端并传入 VannaLegacy，避免内部重复创建
+        global_client = VannaManager._get_global_chroma_client()
+        
+        # Create new instance with shared global client
+        vn = VannaLegacy(
+            config={
                 'api_key': settings.DASHSCOPE_API_KEY,
                 'model': settings.QWEN_MODEL,
-                'path': settings.CHROMA_PERSIST_DIR,
                 'n_results': settings.CHROMA_N_RESULTS,
-                'client': 'persistent',
                 'collection_name': collection_name,
                 'api_base': 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-            })
-            
-            # Enable data visibility for LLM to support intermediate_sql reasoning
-            vn.allow_llm_to_see_data = True
-            
-            # Cache the instance
-            VannaManager._chroma_clients[collection_name] = vn
-            logger.info(f"Created new Vanna instance for collection {collection_name}")
-            
-            return vn
-        except Exception as e:
-            # Handle ChromaDB instance conflict
-            error_msg = str(e)
-            if "already exists" in error_msg.lower() or "different settings" in error_msg.lower():
-                logger.warning(f"ChromaDB instance conflict for {collection_name}: {error_msg}")
-                logger.warning("Attempting to reuse any existing cached instance...")
-                
-                # Check if we have any cached instance for this collection
-                if collection_name in VannaManager._chroma_clients:
-                    logger.info(f"Found cached instance for {collection_name}, reusing it")
-                    return VannaManager._chroma_clients[collection_name]
-                
-                # If no cache, try to clear all caches and retry once
-                logger.warning("No cached instance found, clearing ChromaDB cache and retrying...")
-                VannaManager._chroma_clients.clear()
-                VannaManager._agent_instances.clear()
-                
-                # Retry creation
-                vn = VannaLegacy(config={
-                    'api_key': settings.DASHSCOPE_API_KEY,
-                    'model': settings.QWEN_MODEL,
-                    'path': settings.CHROMA_PERSIST_DIR,
-                    'n_results': settings.CHROMA_N_RESULTS,
-                    'client': 'persistent',
-                    'collection_name': collection_name,
-                    'api_base': 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-                })
-                vn.allow_llm_to_see_data = True
-                VannaManager._chroma_clients[collection_name] = vn
-                logger.info(f"Successfully created Vanna instance after cache clear")
-                return vn
-            else:
-                # Other errors, re-raise
-                logger.error(f"Failed to create Vanna instance: {e}")
-                raise
+            },
+            chroma_client=global_client  # 传入全局客户端
+        )
+        
+        # Enable data visibility for LLM to support intermediate_sql reasoning
+        vn.allow_llm_to_see_data = True
+        
+        # Cache the instance
+        VannaManager._chroma_clients[collection_name] = vn
+        logger.info(f"Created new Vanna instance for collection {collection_name}")
+        
+        return vn
 
     @staticmethod
     def get_agent(dataset_id: int):
@@ -424,11 +435,7 @@ class VannaManager:
                 logger.info(f"Removed Agent instance from cache: {collection_name}")
             
             # 2. 删除 ChromaDB collection（使用全局客户端）
-            import chromadb
-            if VannaManager._global_chroma_client is None:
-                VannaManager._global_chroma_client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
-            
-            chroma_client = VannaManager._global_chroma_client
+            chroma_client = VannaManager._get_global_chroma_client()
             
             try:
                 chroma_client.delete_collection(name=collection_name)
@@ -451,15 +458,16 @@ class VannaManager:
             return False
 
     @staticmethod
-    def get_training_data(dataset_id: int, page: int = 1, page_size: int = 20) -> dict:
+    def get_training_data(dataset_id: int, page: int = 1, page_size: int = 20, type_filter: str = None) -> dict:
         """
         从 ChromaDB collection 中获取训练数据（QA对、DDL、文档等）
-        支持分页查询
+        支持分页查询，兼容旧版和新版存储格式
         
         Args:
             dataset_id: 数据集ID
             page: 页码（从1开始）
             page_size: 每页数量
+            type_filter: 类型筛选，可选值: 'ddl', 'sql', 'documentation', None(全部)
             
         Returns:
             dict: {
@@ -480,96 +488,169 @@ class VannaManager:
         collection_name = f"vec_ds_{dataset_id}"
         
         try:
-            # 初始化 ChromaDB 客户端
-            import chromadb
-            if VannaManager._global_chroma_client is None:
-                VannaManager._global_chroma_client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+            # 获取全局 ChromaDB 客户端
+            chroma_client = VannaManager._get_global_chroma_client()
             
-            chroma_client = VannaManager._global_chroma_client
-            
-            # 获取 collection
-            try:
-                collection = chroma_client.get_collection(name=collection_name)
-            except Exception as e:
-                if "does not exist" in str(e).lower():
-                    logger.info(f"Collection {collection_name} does not exist, returning empty result")
-                    return {
-                        'total': 0,
-                        'items': [],
-                        'page': page,
-                        'page_size': page_size
-                    }
-                raise
-            
-            # 获取所有数据（ChromaDB get()方法）
-            # ChromaDB的get()可以不带参数获取所有文档
-            result = collection.get(
-                include=['documents', 'metadatas']  # 包含文档内容和元数据
-            )
-            
-            # 解析返回的数据
-            ids = result.get('ids', [])
-            documents = result.get('documents', [])
-            metadatas = result.get('metadatas', [])
-            
-            # 构建训练数据列表
             all_items = []
-            for i, doc_id in enumerate(ids):
-                document = documents[i] if i < len(documents) else ''
-                metadata = metadatas[i] if i < len(metadatas) else {}
-                
-                # 确定数据类型
-                training_data_type = 'sql'  # 默认类型
-                if 'training_data_type' in metadata:
-                    training_data_type = metadata['training_data_type']
-                elif 'CREATE TABLE' in document or 'CREATE VIEW' in document:
-                    training_data_type = 'ddl'
-                elif metadata.get('question') is None:
-                    training_data_type = 'documentation'
-                
-                # 提取 question 和 sql
-                question = metadata.get('question', '')
-                sql = document  # document 通常存储 SQL 或 DDL
-                
-                # 特殊处理：如果是通过 train(question=..., sql=...) 训练的
-                # metadata 会包含 question，document 包含 SQL
-                if not question and training_data_type == 'sql':
-                    # 尝试从 document 中提取（某些情况下 question 和 sql 都在 document 中）
-                    question = metadata.get('text', '')  # 备用字段
-                
-                # 如果是 DDL，使用表名作为 question
-                if training_data_type == 'ddl' and not question:
-                    # 尝试从 DDL 中提取表名
-                    import re
-                    table_match = re.search(r'CREATE TABLE\s+`?(\w+)`?', sql, re.IGNORECASE)
-                    if table_match:
-                        table_name = table_match.group(1)
-                        question = f"表结构: {table_name}"
-                    else:
-                        question = "数据库表结构定义"
-                
-                # 如果是文档类型
-                if training_data_type == 'documentation':
-                    question = "业务文档" if '业务' in sql else "数据库文档"
-                    # documentation 类型的 sql 字段存储文档内容
-                
-                all_items.append({
-                    'id': doc_id,
-                    'question': question,
-                    'sql': sql,
-                    'training_data_type': training_data_type,
-                    'created_at': metadata.get('created_at') or metadata.get('timestamp')
-                })
+            
+            # 方案 1：新版分开存储的 collection
+            # 根据 type_filter 决定查询哪些 collection
+            if type_filter and type_filter != 'all':
+                collection_configs = [(f"{collection_name}_{type_filter}", type_filter)]
+            else:
+                collection_configs = [
+                    (f"{collection_name}_ddl", 'ddl'),
+                    (f"{collection_name}_documentation", 'documentation'),
+                    (f"{collection_name}_sql", 'sql'),
+                ]
+            
+            for coll_name, data_type in collection_configs:
+                try:
+                    collection = chroma_client.get_collection(name=coll_name)
+                    result = collection.get(include=['documents', 'metadatas'])
+                    
+                    ids = result.get('ids', [])
+                    documents = result.get('documents', [])
+                    metadatas = result.get('metadatas', [])
+                    
+                    for i, doc_id in enumerate(ids):
+                        document = documents[i] if i < len(documents) else ''
+                        metadata = metadatas[i] if i < len(metadatas) and metadatas[i] is not None else {}
+                        
+                        # 处理 metadata 中的 question（可能是 JSON 字符串）
+                        question = metadata.get('question', '')
+                        if isinstance(question, str) and question.startswith('{'):
+                            try:
+                                import json
+                                parsed = json.loads(question)
+                                question = parsed.get('question', '')
+                            except:
+                                pass
+                        
+                        # 处理 document（sql 可能在 document 或 metadata 中）
+                        sql = document
+                        if isinstance(sql, str) and sql.startswith('{'):
+                            try:
+                                import json
+                                parsed = json.loads(sql)
+                                question = parsed.get('question', question)
+                                sql = parsed.get('sql', sql)
+                            except:
+                                pass
+                        
+                        training_data_type = data_type
+                        
+                        # DDL 类型：使用表名作为 question
+                        if training_data_type == 'ddl' and not question:
+                            import re
+                            table_match = re.search(r'CREATE TABLE\s+`?(\w+)`?', sql, re.IGNORECASE)
+                            if table_match:
+                                question = table_match.group(1)
+                            else:
+                                question = "数据库表结构定义"
+                        
+                        # 文档类型
+                        if training_data_type == 'documentation' and not question:
+                            if '业务术语' in sql:
+                                # 提取术语名称
+                                term_match = re.search(r'业务术语[：:]\s*(.+?)\n', sql)
+                                if term_match:
+                                    question = term_match.group(1)
+                                else:
+                                    question = "业务术语定义"
+                            elif 'joined with' in sql.lower():
+                                # 提取表关系
+                                relation_match = re.search(r'`(\w+)`.*?joined with.*?`(\w+)`', sql, re.IGNORECASE)
+                                if relation_match:
+                                    question = f"{relation_match.group(1)} 与 {relation_match.group(2)} 的关系"
+                                else:
+                                    question = "表关系描述"
+                            else:
+                                # 取文档前50字符作为描述
+                                question = sql[:50].strip()
+                        
+                        # SQL QA 对
+                        if training_data_type == 'sql' and not question:
+                            question = metadata.get('text', '示例查询')
+                        
+                        all_items.append({
+                            'id': doc_id,
+                            'question': question or '未命名',
+                            'sql': sql,
+                            'training_data_type': training_data_type,
+                            'created_at': metadata.get('created_at') or metadata.get('timestamp')
+                        })
+                        
+                except Exception as e:
+                    if "does not exist" not in str(e).lower():
+                        logger.warning(f"Failed to get data from collection {coll_name}: {e}")
+                    continue
+            
+            # 方案 2：旧版单一 collection 格式（兼容旧数据）
+            if len(all_items) == 0:
+                try:
+                    collection = chroma_client.get_collection(name=collection_name)
+                    result = collection.get(include=['documents', 'metadatas'])
+                    
+                    ids = result.get('ids', [])
+                    documents = result.get('documents', [])
+                    metadatas = result.get('metadatas', [])
+                    
+                    for i, doc_id in enumerate(ids):
+                        document = documents[i] if i < len(documents) else ''
+                        metadata = metadatas[i] if i < len(metadatas) and metadatas[i] is not None else {}
+                        
+                        question = metadata.get('question', '')
+                        sql = document
+                        
+                        # 自动检测数据类型
+                        training_data_type = 'sql'  # 默认
+                        if 'CREATE TABLE' in document.upper() or 'CREATE VIEW' in document.upper():
+                            training_data_type = 'ddl'
+                        elif question is None or question == '':
+                            if '业务' in document or 'joined with' in document.lower():
+                                training_data_type = 'documentation'
+                        
+                        # 应用类型筛选
+                        if type_filter and type_filter != 'all' and training_data_type != type_filter:
+                            continue
+                        
+                        # DDL 类型：使用表名作为 question
+                        if training_data_type == 'ddl' and not question:
+                            import re
+                            table_match = re.search(r'CREATE TABLE\s+`?(\w+)`?', sql, re.IGNORECASE)
+                            if table_match:
+                                question = f"表结构: {table_match.group(1)}"
+                            else:
+                                question = "数据库表结构定义"
+                        
+                        # 文档类型
+                        if training_data_type == 'documentation' and not question:
+                            question = "业务文档"
+                        
+                        # SQL QA 对
+                        if training_data_type == 'sql' and not question:
+                            question = metadata.get('text', '示例查询')
+                        
+                        all_items.append({
+                            'id': doc_id,
+                            'question': question,
+                            'sql': sql,
+                            'training_data_type': training_data_type,
+                            'created_at': metadata.get('created_at') or metadata.get('timestamp')
+                        })
+                        
+                except Exception as e:
+                    if "does not exist" not in str(e).lower():
+                        logger.warning(f"Failed to get data from legacy collection {collection_name}: {e}")
             
             # 计算分页
             total = len(all_items)
             start = (page - 1) * page_size
             end = start + page_size
-            
-            # 获取当前页数据
             items = all_items[start:end]
             
-            logger.info(f"Retrieved {len(items)} training data items (page {page}/{(total + page_size - 1) // page_size}) for dataset {dataset_id}")
+            logger.info(f"Retrieved {len(items)} training data items (page {page}/{(total + page_size - 1) // page_size if total > 0 else 1}) for dataset {dataset_id}")
             
             return {
                 'total': total,

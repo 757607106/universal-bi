@@ -7,19 +7,41 @@
     @close="handleClose"
   >
     <div class="training-data-container">
-      <!-- 数据统计 -->
-      <el-alert
-        type="info"
-        :closable="false"
-        class="mb-4"
-      >
-        <template #title>
-          <div class="flex items-center gap-2">
-            <el-icon><InfoFilled /></el-icon>
-            <span>数据集共包含 <strong>{{ total }}</strong> 条训练数据</span>
-          </div>
-        </template>
-      </el-alert>
+      <!-- 数据统计和筛选 -->
+      <div class="flex items-center justify-between mb-4">
+        <el-alert
+          type="info"
+          :closable="false"
+          class="flex-1 mr-4"
+        >
+          <template #title>
+            <div class="flex items-center gap-2">
+              <el-icon><InfoFilled /></el-icon>
+              <span>数据集共包含 <strong>{{ total }}</strong> 条训练数据</span>
+            </div>
+          </template>
+        </el-alert>
+
+        <!-- 类型筛选 -->
+        <div class="flex items-center gap-2">
+          <span class="text-gray-500 dark:text-slate-400 text-sm">类型筛选：</span>
+          <el-radio-group v-model="typeFilter" size="small" @change="handleFilterChange">
+            <el-radio-button value="all">全部</el-radio-button>
+            <el-radio-button value="ddl">
+              <el-icon class="mr-1"><Grid /></el-icon>
+              表结构
+            </el-radio-button>
+            <el-radio-button value="sql">
+              <el-icon class="mr-1"><ChatLineSquare /></el-icon>
+              QA对
+            </el-radio-button>
+            <el-radio-button value="documentation">
+              <el-icon class="mr-1"><Document /></el-icon>
+              文档
+            </el-radio-button>
+          </el-radio-group>
+        </div>
+      </div>
 
       <!-- 数据表格 -->
       <el-table
@@ -33,8 +55,9 @@
         <!-- 序号 -->
         <el-table-column
           type="index"
-          label="#"
-          width="60"
+          label="#序号"
+          width="80"
+          align="center"
           :index="(index) => (currentPage - 1) * pageSize + index + 1"
         />
 
@@ -42,7 +65,8 @@
         <el-table-column
           prop="training_data_type"
           label="类型"
-          width="120"
+          width="100"
+          align="center"
         >
           <template #default="{ row }">
             <el-tag
@@ -56,34 +80,30 @@
 
         <!-- 问题/描述 -->
         <el-table-column
-          prop="question"
           label="问题/描述"
-          min-width="200"
-          show-overflow-tooltip
-        />
+          min-width="250"
+        >
+          <template #default="{ row }">
+            <span class="description-text">{{ formatDescription(row) }}</span>
+          </template>
+        </el-table-column>
 
         <!-- SQL/内容 -->
         <el-table-column
-          prop="sql"
           label="SQL/内容"
-          min-width="300"
+          min-width="350"
         >
           <template #default="{ row }">
             <div class="sql-content">
-              <el-text
-                line-clamp="3"
-                class="sql-text"
-              >
-                {{ row.sql }}
-              </el-text>
+              <code class="sql-text">{{ formatSqlPreview(row.sql) }}</code>
               <el-button
+                v-if="row.sql && row.sql.length > 80"
                 link
                 type="primary"
                 size="small"
                 @click="handleViewDetail(row)"
-                class="mt-1"
               >
-                查看详情
+                查看完整内容
               </el-button>
             </div>
           </template>
@@ -92,7 +112,8 @@
         <!-- 操作 -->
         <el-table-column
           label="操作"
-          width="100"
+          width="80"
+          align="center"
           fixed="right"
         >
           <template #default="{ row }">
@@ -158,9 +179,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { InfoFilled, CopyDocument } from '@element-plus/icons-vue'
+import { InfoFilled, CopyDocument, Grid, ChatLineSquare, Document } from '@element-plus/icons-vue'
 import { getTrainingData, type TrainingDataItem } from '@/api/dataset'
 
 interface Props {
@@ -179,6 +200,9 @@ const dataList = ref<TrainingDataItem[]>([])
 const total = ref(0)
 const currentPage = ref(1)
 const pageSize = ref(20)
+
+// 类型筛选
+const typeFilter = ref('all')
 
 // 详情对话框
 const detailDialogVisible = ref(false)
@@ -207,7 +231,7 @@ const fetchData = async () => {
 
   loading.value = true
   try {
-    const res = await getTrainingData(props.datasetId, currentPage.value, pageSize.value)
+    const res = await getTrainingData(props.datasetId, currentPage.value, pageSize.value, typeFilter.value)
     dataList.value = res.items
     total.value = res.total
   } catch (error: any) {
@@ -215,6 +239,12 @@ const fetchData = async () => {
   } finally {
     loading.value = false
   }
+}
+
+// 类型筛选变化
+const handleFilterChange = () => {
+  currentPage.value = 1
+  fetchData()
 }
 
 // 分页处理
@@ -257,6 +287,66 @@ const getTypeName = (type: string) => {
   }
 }
 
+// 格式化问题/描述显示
+const formatDescription = (row: TrainingDataItem) => {
+  const type = row.training_data_type
+  const question = row.question || ''
+  const sql = row.sql || ''
+  
+  // 如果后端已经返回了清晰的 question，直接使用
+  if (question && !question.startsWith('表结构:') && !question.startsWith('{')) {
+    // 表结构类型：在表名后添加说明
+    if (type === 'ddl') {
+      return `${question} 表结构定义`
+    }
+    return question
+  }
+  
+  // 后备逻辑：从 sql 中提取信息
+  if (type === 'ddl') {
+    const tableMatch = sql.match(/CREATE\s+TABLE\s+`?(\w+)`?/i)
+    if (tableMatch) {
+      return `${tableMatch[1]} 表结构定义`
+    }
+    return '表结构定义'
+  }
+  
+  if (type === 'sql') {
+    return question || '示例查询'
+  }
+  
+  if (type === 'documentation') {
+    if (question.length > 50) {
+      return question.substring(0, 50) + '...'
+    }
+    return question || '业务文档'
+  }
+  
+  return question || '-'
+}
+
+// 格式化 SQL 预览（简短显示）
+const formatSqlPreview = (sql: string) => {
+  if (!sql) return '-'
+  
+  // 如果是 JSON 字符串，尝试解析
+  if (sql.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(sql)
+      sql = parsed.sql || sql
+    } catch {
+      // 解析失败，使用原始字符串
+    }
+  }
+  
+  // 移除多余空白，单行显示
+  const cleaned = sql.replace(/\s+/g, ' ').trim()
+  if (cleaned.length > 80) {
+    return cleaned.substring(0, 80) + '...'
+  }
+  return cleaned
+}
+
 // 查看详情
 const handleViewDetail = (row: TrainingDataItem) => {
   currentItem.value = row
@@ -279,6 +369,7 @@ const handleClose = () => {
   dataList.value = []
   total.value = 0
   currentPage.value = 1
+  typeFilter.value = 'all'
 }
 </script>
 
@@ -291,6 +382,15 @@ const handleClose = () => {
   width: 100%;
 }
 
+.description-text {
+  color: #333;
+  font-size: 13px;
+}
+
+.dark .description-text {
+  color: #e2e8f0;
+}
+
 .sql-content {
   display: flex;
   flex-direction: column;
@@ -298,20 +398,20 @@ const handleClose = () => {
 }
 
 .sql-text {
-  font-family: 'Courier New', monospace;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
   font-size: 12px;
-  line-height: 1.5;
-  color: #666;
-  background-color: #f5f7fa;
-  padding: 8px;
+  line-height: 1.4;
+  color: #1e40af;
+  background-color: #f1f5f9;
+  padding: 6px 10px;
   border-radius: 4px;
-  white-space: pre-wrap;
+  display: block;
   word-break: break-all;
 }
 
 .dark .sql-text {
   background-color: #1e293b;
-  color: #cbd5e1;
+  color: #93c5fd;
 }
 
 .detail-content {
@@ -319,7 +419,7 @@ const handleClose = () => {
 }
 
 .sql-detail :deep(textarea) {
-  font-family: 'Courier New', monospace;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
   font-size: 13px;
   line-height: 1.6;
 }

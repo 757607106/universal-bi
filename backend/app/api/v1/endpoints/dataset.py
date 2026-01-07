@@ -10,7 +10,8 @@ from app.schemas.dataset import (
     DatasetCreate, DatasetResponse, DatasetUpdateTables,
     BusinessTermCreate, BusinessTermResponse,
     AnalyzeRelationshipsRequest, AnalyzeRelationshipsResponse,
-    CreateViewRequest, TrainingLogResponse, TrainingDataResponse
+    CreateViewRequest, TrainingLogResponse, TrainingDataResponse,
+    TrainQARequest, TrainDocRequest
 )
 from app.services.vanna_manager import VannaManager
 
@@ -272,6 +273,94 @@ def delete_business_term(
     db.commit()
     
     return {"message": "术语已删除（注：向量库中的训练数据仍保留）"}
+
+
+# ===== QA Training Endpoints =====
+
+@router.post("/{id}/training/qa")
+def train_qa_pair(
+    id: int,
+    qa_data: TrainQARequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    训练一个 QA 对（问题-SQL 对）
+    这将帮助 AI 学习如何将特定问题转化为 SQL 查询
+    
+    Args:
+        id: 数据集 ID
+        qa_data: 包含 question 和 sql 的请求体
+    """
+    # 验证 dataset 访问权限
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    # 额外检查：公共资源只有超级管理员可以添加训练数据
+    if dataset.owner_id is None and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Cannot add training data to public resources")
+    
+    try:
+        VannaManager.train_qa(
+            dataset_id=id,
+            question=qa_data.question,
+            sql=qa_data.sql,
+            db_session=db
+        )
+        return {
+            "message": "QA对训练成功",
+            "question": qa_data.question,
+            "sql": qa_data.sql
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"QA对训练失败: {str(e)}")
+
+
+@router.post("/{id}/training/doc")
+def train_documentation(
+    id: int,
+    doc_data: TrainDocRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    训练一个文档（业务规则、描述等）
+    这将帮助 AI 理解业务上下文和规则
+    
+    Args:
+        id: 数据集 ID
+        doc_data: 包含 content 的请求体
+    """
+    # 验证 dataset 访问权限
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    # 额外检查：公共资源只有超级管理员可以添加训练数据
+    if dataset.owner_id is None and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Cannot add training data to public resources")
+    
+    try:
+        # 获取 Legacy Vanna 实例并训练文档
+        vn = VannaManager.get_legacy_vanna(id)
+        vn.train(documentation=doc_data.content)
+        
+        # 清理缓存
+        VannaManager.clear_cache(id)
+        
+        return {
+            "message": "文档训练成功",
+            "content": doc_data.content[:100] + "..." if len(doc_data.content) > 100 else doc_data.content
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"文档训练失败: {str(e)}")
 
 
 # Modeling Endpoints
@@ -661,6 +750,7 @@ def get_training_data(
     id: int,
     page: int = 1,
     page_size: int = 20,
+    type_filter: str = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -672,6 +762,7 @@ def get_training_data(
         id: 数据集 ID
         page: 页码（从1开始）
         page_size: 每页数量（默认20）
+        type_filter: 类型筛选，可选值: 'ddl', 'sql', 'documentation'
     """
     # 验证 dataset 访问权限
     query = db.query(Dataset).filter(Dataset.id == id)
@@ -683,7 +774,7 @@ def get_training_data(
     
     try:
         # 调用 VannaManager 获取训练数据
-        result = VannaManager.get_training_data(id, page, page_size)
+        result = VannaManager.get_training_data(id, page, page_size, type_filter)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
