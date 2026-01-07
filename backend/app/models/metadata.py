@@ -40,13 +40,17 @@ class Dataset(Base):
     datasource_id = Column(Integer, ForeignKey("datasources.id"))
     collection_name = Column(String(255), unique=True, index=True)
     schema_config = Column(JSON)  # e.g. ["users", "orders"]
-    training_status = Column(String(50), default="pending")  # pending, training, completed, failed
-    last_trained_at = Column(DateTime, nullable=True)
+    status = Column(String(50), default="pending")  # pending, training, completed, failed, paused
+    modeling_config = Column(JSON, nullable=True, comment="存储前端可视化建模的画布数据(nodes/edges)")
+    process_rate = Column(Integer, default=0, comment="训练进度百分比 0-100")
+    error_msg = Column(Text, nullable=True)
+    last_train_at = Column(DateTime, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # 为 None 则为公共资源
     
     datasource = relationship("DataSource", back_populates="datasets")
     owner = relationship("User")
     business_terms = relationship("BusinessTerm", back_populates="dataset", cascade="all, delete-orphan")
+    training_logs = relationship("TrainingLog", back_populates="dataset", cascade="all, delete-orphan")
 
 
 class Dashboard(Base):
@@ -61,6 +65,18 @@ class Dashboard(Base):
     
     cards = relationship("DashboardCard", back_populates="dashboard", cascade="all, delete-orphan")
     owner = relationship("User")
+
+
+class TrainingLog(Base):
+    """训练日志模型 - 记录数据集训练过程的日志"""
+    __tablename__ = "training_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    content = Column(Text)  # 日志内容
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    dataset = relationship("Dataset", back_populates="training_logs")
 
 
 class DashboardCard(Base):

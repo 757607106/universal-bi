@@ -201,29 +201,14 @@
                      />
                   </div>
                   
-                  <!-- AI Summary Section -->
-                  <div class="bg-gradient-to-r from-blue-50/50 to-cyan-50/50 dark:from-slate-900/50 dark:to-slate-800/50 rounded-xl p-4 border border-blue-200/50 dark:border-slate-700/50">
-                    <!-- Loading State -->
-                    <div v-if="msg.summaryLoading" class="flex items-center gap-3 text-blue-600 dark:text-cyan-400">
-                      <el-icon class="is-loading text-xl"><Loading /></el-icon>
-                      <span class="text-sm font-medium">✨ AI 正在分析数据...</span>
+                  <!-- AI Insight Section (分析师 Agent) -->
+                  <div v-if="msg.insight" class="bg-gradient-to-r from-blue-50/50 to-cyan-50/50 dark:from-slate-900/50 dark:to-slate-800/50 rounded-xl p-4 border border-blue-200/50 dark:border-slate-700/50">
+                    <div class="flex items-center gap-2 text-blue-600 dark:text-cyan-400 mb-2">
+                      <el-icon class="text-lg"><DataAnalysis /></el-icon>
+                      <span class="text-xs font-semibold uppercase tracking-wide">智能分析</span>
                     </div>
-                    
-                    <!-- Summary Content with Typing Effect -->
-                    <div v-else-if="msg.summary" class="space-y-2">
-                      <div class="flex items-center gap-2 text-blue-600 dark:text-cyan-400 mb-2">
-                        <el-icon class="text-lg"><DataAnalysis /></el-icon>
-                        <span class="text-xs font-semibold uppercase tracking-wide">智能分析</span>
-                      </div>
-                      <p class="text-sm text-gray-700 dark:text-slate-300 leading-relaxed">
-                        {{ msg.summary }}
-                      </p>
-                    </div>
-                    
-                    <!-- Error State -->
-                    <div v-else-if="msg.summaryError" class="flex items-center gap-3 text-gray-400 dark:text-slate-500">
-                      <el-icon class="text-lg"><WarningFilled /></el-icon>
-                      <span class="text-xs">总结生成失败</span>
+                    <div class="text-sm text-gray-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
+                      {{ msg.insight }}
                     </div>
                   </div>
                   
@@ -434,9 +419,10 @@ interface Message {
   steps?: string[]  // 执行步骤
   isSystemError?: boolean  // 区分系统错误和业务澄清
   feedbackGiven?: 'like' | 'dislike'  // 反馈状态
-  summary?: string  // AI 业务总结
-  summaryLoading?: boolean  // 总结加载中
-  summaryError?: boolean  // 总结加载失败
+  summary?: string  // AI 业务总结 (已废弃，保留兼容)
+  summaryLoading?: boolean  // 总结加载中 (已废弃，保留兼容)
+  summaryError?: boolean  // 总结加载失败 (已废弃，保留兼容)
+  insight?: string  // 分析师 Agent 的业务洞察
 }
 
 const currentDatasetId = ref<number | undefined>(undefined)
@@ -510,8 +496,8 @@ onMounted(async () => {
   loadingDatasets.value = true
   try {
     const res = await getDatasetList()
-    // Filter only completed datasets
-    datasets.value = res.filter(d => d.training_status === 'completed')
+    // Filter only completed datasets (兼容旧字段 training_status 和新字段 status)
+    datasets.value = res.filter(d => (d.status || d.training_status) === 'completed')
     if (datasets.value.length > 0) {
       currentDatasetId.value = datasets.value[0].id
     }
@@ -627,35 +613,7 @@ const handleSend = async () => {
       steps: res.steps,
       error: false,
       isSystemError: false,
-      summaryLoading: false,
-      summary: undefined,
-      summaryError: false
-    }
-    
-    // 如果有图表数据，异步生成 AI 总结
-    if (chartData && chartData.rows && chartData.rows.length > 0 && res.sql) {
-      // 先设置 loading 状态
-      messages.value[aiMsgIndex].summaryLoading = true
-      scrollToBottom()
-      
-      try {
-        const summaryRes = await generateSummary({
-          dataset_id: currentDatasetId.value!,
-          question: question,
-          sql: res.sql,
-          columns: chartData.columns!,
-          rows: chartData.rows
-        })
-        
-        // 更新总结
-        messages.value[aiMsgIndex].summaryLoading = false
-        messages.value[aiMsgIndex].summary = summaryRes.summary
-        scrollToBottom()
-      } catch (error: any) {
-        console.error('生成总结失败:', error)
-        messages.value[aiMsgIndex].summaryLoading = false
-        messages.value[aiMsgIndex].summaryError = true
-      }
+      insight: res.insight  // 直接使用后端同步返回的分析
     }
   } catch (error: any) {
     console.error(error)

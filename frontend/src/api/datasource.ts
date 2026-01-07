@@ -15,6 +15,16 @@ export interface DataSource extends DataSourceForm {
   password_encrypted?: string
 }
 
+export interface TableInfo {
+  name: string
+  columns: {
+    name: string
+    type: string
+    nullable?: boolean
+    default?: string | null
+  }[]
+}
+
 export const testConnection = async (data: DataSourceForm) => {
   return await http.post<boolean, DataSourceForm>('/datasources/test', data)
 }
@@ -32,7 +42,7 @@ export const deleteDataSource = async (id: number) => {
 }
 
 export const getTables = async (id: number) => {
-  return await http.get<string[], any>(`/datasources/${id}/tables`)
+  return await http.get<TableInfo[], any>(`/datasources/${id}/tables`)
 }
 
 export const previewTable = async (id: number, tableName: string) => {

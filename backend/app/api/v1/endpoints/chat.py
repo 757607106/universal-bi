@@ -76,7 +76,7 @@ async def submit_feedback(
     try:
         # Only train on positive feedback or corrected SQL
         if request.rating == 1:
-            # User likes this result - train it
+            # User likes this result - train with original SQL
             VannaManager.train_qa(
                 dataset_id=request.dataset_id,
                 question=request.question,
@@ -88,11 +88,12 @@ async def submit_feedback(
                 message="感谢反馈！AI 已记住这个查询逻辑。"
             )
         elif request.rating == -1:
-            # User provided corrected SQL - train it
+            # User dislikes result and provided corrected SQL
+            # The 'sql' field contains the corrected SQL in this case
             VannaManager.train_qa(
                 dataset_id=request.dataset_id,
                 question=request.question,
-                sql=request.sql,  # This should be the corrected SQL
+                sql=request.sql,  # This is the corrected SQL from user
                 db_session=db
             )
             return FeedbackResponse(

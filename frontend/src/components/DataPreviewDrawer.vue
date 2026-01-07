@@ -87,7 +87,7 @@
 import { ref, computed, watch } from 'vue'
 import { Search, List } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { getTables, previewTable } from '../api/datasource'
+import { getTables, previewTable, type TableInfo } from '../api/datasource'
 
 const props = defineProps<{
   modelValue: boolean
@@ -105,11 +105,14 @@ const visible = computed({
 
 const loadingTables = ref(false)
 const loadingData = ref(false)
-const tables = ref<string[]>([])
+const tablesInfo = ref<TableInfo[]>([])
 const searchTable = ref('')
 const currentTable = ref('')
 const tableColumns = ref<{ prop: string, label: string }[]>([])
 const tableData = ref<any[]>([])
+
+// 计算属性：从 TableInfo 中提取表名列表
+const tables = computed(() => tablesInfo.value.map(t => t.name))
 
 const filteredTables = computed(() => {
   if (!searchTable.value) return tables.value
@@ -133,12 +136,14 @@ const fetchTables = async () => {
   
   loadingTables.value = true
   try {
-    tables.value = await getTables(props.datasourceId)
+    tablesInfo.value = await getTables(props.datasourceId)
+    console.log('Loaded tables info:', tablesInfo.value)
     // 如果有表，默认选中第一个
-    if (tables.value.length > 0) {
-      handleTableClick(tables.value[0])
+    if (tablesInfo.value.length > 0) {
+      handleTableClick(tablesInfo.value[0].name)
     }
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Error getting tables:', error)
     ElMessage.error('获取表列表失败')
   } finally {
     loadingTables.value = false
@@ -153,10 +158,12 @@ const handleTableClick = async (tableName: string) => {
   loadingData.value = true
   
   try {
+    console.log('Fetching data for table:', tableName)
     const data = await previewTable(props.datasourceId, tableName)
     tableColumns.value = data.columns
     tableData.value = data.rows
-  } catch (error) {
+  } catch (error: any) {
+    console.error(`Error getting data for ${tableName}:`, error)
     ElMessage.error(`获取表 ${tableName} 数据失败`)
     tableColumns.value = []
     tableData.value = []

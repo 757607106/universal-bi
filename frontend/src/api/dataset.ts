@@ -7,8 +7,21 @@ export interface Dataset {
   datasource_id: number | null
   collection_name: string
   schema_config: string[] | null
-  training_status: 'pending' | 'training' | 'completed' | 'failed'
-  last_trained_at: string | null
+  status: 'pending' | 'training' | 'completed' | 'failed' | 'paused'
+  training_status: 'pending' | 'training' | 'completed' | 'failed' | 'paused'  // 兼容旧字段
+  process_rate: number
+  error_msg: string | null
+  last_train_at: string | null
+  last_trained_at: string | null  // 兼容旧字段
+  modeling_config?: {
+    nodes: any[]
+    edges: any[]
+    viewport?: {
+      x: number
+      y: number
+      zoom: number
+    }
+  }
 }
 
 export interface DatasetCreate {
@@ -30,6 +43,48 @@ export const updateDatasetTables = async (id: number, tables: string[]) => {
 
 export const trainDataset = async (id: number) => {
   return await http.post<any, any>(`/datasets/${id}/train`)
+}
+
+// Training Progress APIs
+export interface TrainingProgress {
+  status: 'pending' | 'training' | 'completed' | 'failed' | 'paused'
+  process_rate: number
+  error_msg: string | null
+  current_step: string
+}
+
+export interface TrainingLog {
+  id: number
+  content: string
+  created_at: string
+}
+
+export const getTrainingProgress = async (id: number) => {
+  return await http.get<TrainingProgress, any>(`/datasets/${id}/training/progress`)
+}
+
+export const getTrainingLogs = async (id: number, limit: number = 50) => {
+  return await http.get<TrainingLog[], any>(`/datasets/${id}/training/logs?limit=${limit}`)
+}
+
+export const pauseTraining = async (id: number) => {
+  return await http.post<{ message: string }, any>(`/datasets/${id}/training/pause`)
+}
+
+export const deleteTrainingData = async (id: number) => {
+  return await http.delete<{ message: string }, any>(`/datasets/${id}/training`)
+}
+
+export const deleteDataset = async (id: number) => {
+  return await http.delete<{ message: string }, any>(`/datasets/${id}`)
+}
+
+export const updateModelingConfig = async (id: number, config: any) => {
+  return await http.put<{ message: string, modeling_config: any }, any>(`/datasets/${id}/modeling-config`, config)
+}
+
+export const getDataset = async (id: number) => {
+  return await http.get<Dataset, any>(`/datasets/${id}`)
 }
 
 // Modeling APIs

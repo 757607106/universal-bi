@@ -5,12 +5,12 @@ from typing import List
 
 from app.db.session import get_db, SessionLocal
 from app.api.deps import get_current_user, apply_ownership_filter
-from app.models.metadata import Dataset, DataSource, BusinessTerm, User
+from app.models.metadata import Dataset, DataSource, BusinessTerm, User, TrainingLog
 from app.schemas.dataset import (
     DatasetCreate, DatasetResponse, DatasetUpdateTables,
     BusinessTermCreate, BusinessTermResponse,
     AnalyzeRelationshipsRequest, AnalyzeRelationshipsResponse,
-    CreateViewRequest
+    CreateViewRequest, TrainingLogResponse
 )
 from app.services.vanna_manager import VannaManager
 
@@ -47,7 +47,7 @@ def create_dataset(
     dataset = Dataset(
         name=dataset_in.name,
         datasource_id=dataset_in.datasource_id,
-        training_status="pending",
+        status="pending",
         owner_id=current_user.id  # 自动设置为当前用户
     )
     db.add(dataset)
@@ -76,6 +76,25 @@ def list_datasets(
     query = apply_ownership_filter(query, Dataset, current_user)
     datasets = query.offset(skip).limit(limit).all()
     return datasets
+
+@router.get("/{id}", response_model=DatasetResponse)
+def get_dataset(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get a single dataset by ID.
+    应用数据隔离：只能查看自己的数据集和公共资源
+    """
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    return dataset
 
 @router.put("/{id}/tables", response_model=DatasetResponse)
 def update_tables(
@@ -130,16 +149,16 @@ def train_dataset(
         raise HTTPException(status_code=400, detail="No tables selected for training")
         
     # Check if already training? 
-    if dataset.training_status == "training":
+    if dataset.status == "training":
         # Optional: Allow restart or block? User didn't specify.
         # We'll allow it but maybe warn? For now just proceed.
         pass
 
-    dataset.training_status = "pending" # Set to pending before background task picks it up (or directly training)
+    dataset.status = "pending" # Set to pending before background task picks it up (or directly training)
     # Actually VannaManager sets it to 'training'.
     # But to give immediate feedback, maybe we can set it here?
     # VannaManager logic:
-    # dataset.training_status = "training"
+    # dataset.status = "training"
     # So we don't strictly need to set it here, but it's good UI feedback if we set it to 'pending' or 'queued'.
     # The model default is 'pending'.
     
@@ -404,6 +423,95 @@ def _deduplicate_sql_columns(sql: str) -> str:
     return new_sql
 
 
+def _train_relationships_from_edges(dataset_id: int, edges: list, db_session: Session):
+    """
+    从 VueFlow edges 解析表关系并训练到 Vanna。
+    
+    Args:
+        dataset_id: 数据集 ID
+        edges: VueFlow edges 数据列表
+        db_session: 数据库会话
+        
+    VueFlow Edge 结构示例：
+    {
+        "id": "edge-1",
+        "source": "node-users",  # 节点 ID
+        "target": "node-orders",
+        "sourceHandle": "id",    # 字段名
+        "targetHandle": "user_id",
+        "data": {
+            "sourceTable": "users",    # 表名
+            "targetTable": "orders",
+            "sourceField": "id",
+            "targetField": "user_id"
+        }
+    }
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    if not edges or len(edges) == 0:
+        logger.info(f"No edges to train for dataset {dataset_id}")
+        return
+    
+    relationships = []
+    
+    for edge in edges:
+        try:
+            # 方法1：从 data 中获取表名和字段名（优先）
+            if 'data' in edge and edge['data']:
+                data = edge['data']
+                source_table = data.get('sourceTable')
+                target_table = data.get('targetTable')
+                source_field = data.get('sourceField')
+                target_field = data.get('targetField')
+            else:
+                # 方法2：从 source/target 和 handle 中解析
+                # 假设节点 ID 格式为 "node-{table_name}"
+                source_node_id = edge.get('source', '')
+                target_node_id = edge.get('target', '')
+                
+                # 提取表名（移除 "node-" 前缀）
+                source_table = source_node_id.replace('node-', '') if source_node_id.startswith('node-') else source_node_id
+                target_table = target_node_id.replace('node-', '') if target_node_id.startswith('node-') else target_node_id
+                
+                # Handle 即为字段名
+                source_field = edge.get('sourceHandle', '')
+                target_field = edge.get('targetHandle', '')
+            
+            # 验证必要字段
+            if not all([source_table, target_table, source_field, target_field]):
+                logger.warning(f"Skipping edge with incomplete data: {edge.get('id', 'unknown')}")
+                continue
+            
+            # 生成双向关系描述
+            # 正向关系
+            forward_desc = (
+                f"The table `{source_table}` can be joined with table `{target_table}` "
+                f"on the condition `{source_table}`.`{source_field}` = `{target_table}`.`{target_field}`."
+            )
+            relationships.append(forward_desc)
+            
+            # 反向关系（双向关联）
+            reverse_desc = (
+                f"The table `{target_table}` can be joined with table `{source_table}` "
+                f"on the condition `{target_table}`.`{target_field}` = `{source_table}`.`{source_field}`."
+            )
+            relationships.append(reverse_desc)
+            
+            logger.debug(f"Extracted relationship: {source_table}.{source_field} <-> {target_table}.{target_field}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to parse edge {edge.get('id', 'unknown')}: {e}")
+            continue
+    
+    if len(relationships) > 0:
+        logger.info(f"Training {len(relationships)} relationship descriptions for dataset {dataset_id}")
+        VannaManager.train_relationships(dataset_id, relationships, db_session)
+    else:
+        logger.info(f"No valid relationships extracted from {len(edges)} edges")
+
+
 @router.post("/create_view")
 def create_view(
     request: CreateViewRequest,
@@ -487,3 +595,238 @@ def create_view(
         logger = logging.getLogger(__name__)
         logger.error(f"Failed to create view: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"创建视图失败: {str(e)}")
+
+
+# ===== Training Progress Management Endpoints =====
+
+@router.get("/{id}/training/progress")
+def get_training_progress(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    获取训练进度
+    """
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    # 获取最新的日志作为 current_step
+    latest_log = db.query(TrainingLog).filter(
+        TrainingLog.dataset_id == id
+    ).order_by(TrainingLog.created_at.desc()).first()
+    
+    current_step = latest_log.content if latest_log else "等待开始..."
+    
+    return {
+        "status": dataset.status,
+        "process_rate": dataset.process_rate,
+        "error_msg": dataset.error_msg,
+        "current_step": current_step
+    }
+
+
+@router.get("/{id}/training/logs", response_model=List[TrainingLogResponse])
+def get_training_logs(
+    id: int,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    获取训练日志
+    """
+    # 验证 dataset 访问权限
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    # 查询日志
+    logs = db.query(TrainingLog).filter(
+        TrainingLog.dataset_id == id
+    ).order_by(TrainingLog.created_at.desc()).limit(limit).all()
+    
+    return logs
+
+
+@router.post("/{id}/training/pause")
+def pause_training(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    暂停训练
+    """
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    if dataset.status != "training":
+        raise HTTPException(status_code=400, detail="Dataset is not training")
+    
+    # 额外检查：公共资源只有超级管理员可以暂停
+    if dataset.owner_id is None and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Cannot pause training for public resources")
+    
+    dataset.status = "paused"
+    db.commit()
+    
+    return {"message": "训练暂停请求已发送"}
+
+
+@router.delete("/{id}/training")
+def delete_training_data(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    删除训练数据（清理 Collection）
+    """
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    # 额外检查：公共资源只有超级管理员可以删除
+    if dataset.owner_id is None and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Cannot delete training data for public resources")
+    
+    # 调用 VannaManager 删除 collection
+    success = VannaManager.delete_collection(id)
+    
+    if success:
+        return {"message": "训练数据已清理"}
+    else:
+        raise HTTPException(status_code=500, detail="清理训练数据失败")
+
+
+@router.delete("/{id}")
+def delete_dataset(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    删除数据集（包含级联删除训练数据、业务术语、训练日志等）
+    """
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    # 额外检查：公共资源只有超级管理员可以删除
+    if dataset.owner_id is None and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Cannot delete public resources")
+    
+    # 1. 删除 Vanna Collection (训练数据)
+    try:
+        VannaManager.delete_collection(id)
+    except Exception as e:
+        # 记录日志但继续删除
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to delete collection for dataset {id}: {e}")
+    
+    # 2. 删除数据库记录（级联删除会自动删除 business_terms 和 training_logs）
+    db.delete(dataset)
+    db.commit()
+    
+    return {"message": "数据集已删除"}
+
+
+@router.put("/{id}/modeling-config")
+def update_modeling_config(
+    id: int,
+    config: dict,
+    train_relationships: bool = False,  # 新增参数：是否立即训练关系
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    更新数据集的建模配置（保存画布数据）。
+    当 train_relationships=True 时，会解析 edges 并训练表关系到 Vanna。
+    
+    Args:
+        id: 数据集 ID
+        config: 建模配置（包含 nodes 和 edges）
+        train_relationships: 是否立即训练关系（默认 False）
+        db: 数据库会话
+        current_user: 当前用户
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    # 额外检查：公共资源只有超级管理员可以修改
+    if dataset.owner_id is None and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Cannot modify public resources")
+    
+    # 检测 edges 是否发生变化
+    old_edges = dataset.modeling_config.get('edges', []) if dataset.modeling_config else []
+    new_edges = config.get('edges', [])
+    
+    edges_changed = False
+    if len(old_edges) != len(new_edges):
+        edges_changed = True
+    else:
+        # 比较 edge IDs
+        old_edge_ids = {edge.get('id') for edge in old_edges if edge.get('id')}
+        new_edge_ids = {edge.get('id') for edge in new_edges if edge.get('id')}
+        edges_changed = old_edge_ids != new_edge_ids
+    
+    logger.info(f"Updating modeling config for dataset {id}, edges_changed={edges_changed}, train_relationships={train_relationships}")
+    
+    # 保存配置
+    dataset.modeling_config = config
+    db.commit()
+    db.refresh(dataset)
+    
+    # 如果连线发生变化且用户要求训练
+    if train_relationships and new_edges and len(new_edges) > 0:
+        try:
+            logger.info(f"Training relationships from {len(new_edges)} edges for dataset {id}")
+            _train_relationships_from_edges(id, new_edges, db)
+            
+            return {
+                "message": "建模配置已保存，表关系已训练",
+                "modeling_config": dataset.modeling_config,
+                "relationships_trained": True,
+                "edges_count": len(new_edges)
+            }
+        except Exception as e:
+            logger.error(f"Failed to train relationships: {e}", exc_info=True)
+            # 训练失败不影响保存逻辑
+            return {
+                "message": "建模配置已保存，但表关系训练失败",
+                "modeling_config": dataset.modeling_config,
+                "relationships_trained": False,
+                "error": str(e)
+            }
+    
+    return {
+        "message": "建模配置已保存",
+        "modeling_config": dataset.modeling_config,
+        "relationships_trained": False
+    }

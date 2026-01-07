@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, inspect
-from app.models.metadata import Dataset
+from app.models.metadata import Dataset, TrainingLog
 from app.core.config import settings
 from app.services.db_inspector import DBInspector
 from datetime import datetime, date
@@ -31,6 +31,12 @@ from vanna.legacy.openai import OpenAI_Chat
 from vanna.legacy.chromadb import ChromaDB_VectorStore
 
 logger = logging.getLogger(__name__)
+
+
+# Custom Exception for Training Control
+class TrainingStoppedException(Exception):
+    """自定义异常：训练被用户中断"""
+    pass
 
 
 class VannaLegacy(ChromaDB_VectorStore, OpenAI_Chat):
@@ -100,6 +106,9 @@ class VannaManager:
     # Class-level ChromaDB client cache to prevent "different settings" error
     _chroma_clients = {}  # {collection_name: vanna_instance}
     _agent_instances = {}  # {collection_name: agent_instance}
+    
+    # Global ChromaDB persistent client (singleton)
+    _global_chroma_client = None
     
     @classmethod
     def _get_redis_client(cls):
@@ -223,25 +232,61 @@ class VannaManager:
             logger.debug(f"Reusing existing Vanna instance for collection {collection_name}")
             return VannaManager._chroma_clients[collection_name]
         
-        # Create new instance
-        vn = VannaLegacy(config={
-            'api_key': settings.DASHSCOPE_API_KEY,
-            'model': settings.QWEN_MODEL,
-            'path': settings.CHROMA_PERSIST_DIR,
-            'n_results': settings.CHROMA_N_RESULTS,
-            'client': 'persistent',
-            'collection_name': collection_name,
-            'api_base': 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-        })
-        
-        # Enable data visibility for LLM to support intermediate_sql reasoning
-        vn.allow_llm_to_see_data = True
-        
-        # Cache the instance
-        VannaManager._chroma_clients[collection_name] = vn
-        logger.info(f"Created new Vanna instance for collection {collection_name}")
-        
-        return vn
+        try:
+            # Create new instance
+            vn = VannaLegacy(config={
+                'api_key': settings.DASHSCOPE_API_KEY,
+                'model': settings.QWEN_MODEL,
+                'path': settings.CHROMA_PERSIST_DIR,
+                'n_results': settings.CHROMA_N_RESULTS,
+                'client': 'persistent',
+                'collection_name': collection_name,
+                'api_base': 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+            })
+            
+            # Enable data visibility for LLM to support intermediate_sql reasoning
+            vn.allow_llm_to_see_data = True
+            
+            # Cache the instance
+            VannaManager._chroma_clients[collection_name] = vn
+            logger.info(f"Created new Vanna instance for collection {collection_name}")
+            
+            return vn
+        except Exception as e:
+            # Handle ChromaDB instance conflict
+            error_msg = str(e)
+            if "already exists" in error_msg.lower() or "different settings" in error_msg.lower():
+                logger.warning(f"ChromaDB instance conflict for {collection_name}: {error_msg}")
+                logger.warning("Attempting to reuse any existing cached instance...")
+                
+                # Check if we have any cached instance for this collection
+                if collection_name in VannaManager._chroma_clients:
+                    logger.info(f"Found cached instance for {collection_name}, reusing it")
+                    return VannaManager._chroma_clients[collection_name]
+                
+                # If no cache, try to clear all caches and retry once
+                logger.warning("No cached instance found, clearing ChromaDB cache and retrying...")
+                VannaManager._chroma_clients.clear()
+                VannaManager._agent_instances.clear()
+                
+                # Retry creation
+                vn = VannaLegacy(config={
+                    'api_key': settings.DASHSCOPE_API_KEY,
+                    'model': settings.QWEN_MODEL,
+                    'path': settings.CHROMA_PERSIST_DIR,
+                    'n_results': settings.CHROMA_N_RESULTS,
+                    'client': 'persistent',
+                    'collection_name': collection_name,
+                    'api_base': 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+                })
+                vn.allow_llm_to_see_data = True
+                VannaManager._chroma_clients[collection_name] = vn
+                logger.info(f"Successfully created Vanna instance after cache clear")
+                return vn
+            else:
+                # Other errors, re-raise
+                logger.error(f"Failed to create Vanna instance: {e}")
+                raise
 
     @staticmethod
     def get_agent(dataset_id: int):
@@ -300,6 +345,15 @@ class VannaManager:
         Train the dataset by extracting DDLs and feeding them to Vanna Memory.
         This wrapper handles the sync-to-async bridge.
         """
+        # 在训练前主动清理该数据集的缓存，避免 ChromaDB 实例冲突
+        collection_name = f"vec_ds_{dataset_id}"
+        if collection_name in VannaManager._chroma_clients:
+            logger.info(f"Clearing cached Vanna instance before training: {collection_name}")
+            del VannaManager._chroma_clients[collection_name]
+        if collection_name in VannaManager._agent_instances:
+            logger.info(f"Clearing cached Agent instance before training: {collection_name}")
+            del VannaManager._agent_instances[collection_name]
+        
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
@@ -309,64 +363,270 @@ class VannaManager:
         loop.run_until_complete(VannaManager.train_dataset_async(dataset_id, table_names, db_session))
 
     @staticmethod
+    def _checkpoint_and_check_interrupt(db_session: Session, dataset_id: int, progress: int, log_message: str):
+        """
+        检查点：更新进度、记录日志、检查中断
+        
+        Args:
+            db_session: 数据库会话
+            dataset_id: 数据集ID
+            progress: 当前进度 (0-100)
+            log_message: 日志消息
+            
+        Raises:
+            TrainingStoppedException: 如果状态为 paused
+        """
+        # 1. 更新进度
+        dataset = db_session.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not dataset:
+            raise ValueError(f"Dataset {dataset_id} not found")
+        
+        dataset.process_rate = progress
+        
+        # 2. 记录日志
+        training_log = TrainingLog(
+            dataset_id=dataset_id,
+            content=f"[{progress}%] {log_message}"
+        )
+        db_session.add(training_log)
+        db_session.commit()
+        db_session.refresh(dataset)  # 刷新以获取最新状态
+        
+        logger.info(f"Checkpoint: Dataset {dataset_id} progress {progress}% - {log_message}")
+        
+        # 3. 检查是否被中断
+        if dataset.status == "paused":
+            logger.warning(f"Training interrupted by user for dataset {dataset_id}")
+            raise TrainingStoppedException(f"训练被用户中断 (Dataset {dataset_id})")
+    
+    @staticmethod
+    def delete_collection(dataset_id: int):
+        """
+        删除 Vanna/ChromaDB 中指定 dataset 的 collection
+        用于清理向量库数据
+        
+        Args:
+            dataset_id: 数据集ID
+            
+        Returns:
+            bool: 是否成功删除
+        """
+        collection_name = f"vec_ds_{dataset_id}"
+        
+        try:
+            # 1. 从缓存中移除
+            if collection_name in VannaManager._chroma_clients:
+                del VannaManager._chroma_clients[collection_name]
+                logger.info(f"Removed Vanna instance from cache: {collection_name}")
+            
+            if collection_name in VannaManager._agent_instances:
+                del VannaManager._agent_instances[collection_name]
+                logger.info(f"Removed Agent instance from cache: {collection_name}")
+            
+            # 2. 删除 ChromaDB collection（使用全局客户端）
+            import chromadb
+            if VannaManager._global_chroma_client is None:
+                VannaManager._global_chroma_client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+            
+            chroma_client = VannaManager._global_chroma_client
+            
+            try:
+                chroma_client.delete_collection(name=collection_name)
+                logger.info(f"Successfully deleted ChromaDB collection: {collection_name}")
+            except Exception as e:
+                # Collection 不存在也视为成功
+                if "does not exist" in str(e).lower():
+                    logger.info(f"Collection {collection_name} does not exist, nothing to delete")
+                else:
+                    logger.error(f"Failed to delete collection {collection_name}: {e}")
+                    raise
+            
+            # 3. 清理缓存
+            VannaManager.clear_cache(dataset_id)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to delete collection for dataset {dataset_id}: {e}")
+            return False
+
+    @staticmethod
     async def train_dataset_async(dataset_id: int, table_names: list[str], db_session: Session):
         """
-        Async implementation of training logic.
+        异步训练数据集，支持进度更新和中断控制
+        
+        流程：
+        - Step 0-10%: 初始化、检查数据库连接、提取 DDL
+        - Step 10-40%: 训练 DDL 到 Vanna
+        - Step 40-80%: 训练文档/业务术语
+        - Step 80-100%: 生成示例 SQLQA 对并训练
+        
+        Args:
+            dataset_id: 数据集ID
+            table_names: 要训练的表名列表
+            db_session: 数据库会话
         """
-        logger.info(f"Starting training for dataset {dataset_id}")
+        logger.info(f"Starting training for dataset {dataset_id} with tables: {table_names}")
         
         dataset = db_session.query(Dataset).filter(Dataset.id == dataset_id).first()
         if not dataset:
             logger.error(f"Dataset {dataset_id} not found")
             return
-            
-        dataset.training_status = "training"
-        db_session.commit()
         
         try:
+            # === Step 0: 初始化 (0%) ===
+            dataset.status = "training"
+            dataset.process_rate = 0
+            dataset.error_msg = None
+            db_session.commit()
+            
+            VannaManager._checkpoint_and_check_interrupt(db_session, dataset_id, 0, "训练启动")
+            
+            # === Step 1: 检查数据库连接和提取 DDL (0-10%) ===
             datasource = dataset.datasource
             if not datasource:
                 raise ValueError("DataSource associated with dataset not found")
             
-            # 1. Initialize Agent
-            agent = VannaManager.get_agent(dataset_id)
+            VannaManager._checkpoint_and_check_interrupt(db_session, dataset_id, 5, "检查数据源连接")
             
-            # 2. Extract DDLs
+            # 提取 DDLs
             ddls = []
-            for table_name in table_names:
+            for i, table_name in enumerate(table_names):
                 try:
                     ddl = DBInspector.get_table_ddl(datasource, table_name)
-                    ddls.append(ddl)
+                    ddls.append((table_name, ddl))
+                    
+                    # 每处理一个表，更新一次进度
+                    progress = 5 + int((i + 1) / len(table_names) * 5)
+                    VannaManager._checkpoint_and_check_interrupt(
+                        db_session, dataset_id, progress, 
+                        f"提取表 DDL: {table_name} ({i+1}/{len(table_names)})"
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to get DDL for {table_name}: {e}")
+                    # 继续处理其他表
             
-            # 3. Feed to Vanna (Memory)
-            user = User(id="admin", email="admin@example.com", group_memberships=['admin'])
-            context = ToolContext(
-                user=user,
-                conversation_id=str(uuid.uuid4()),
-                request_id=str(uuid.uuid4()),
-                agent_memory=agent.agent_memory
-            )
+            if not ddls:
+                raise ValueError("没有成功提取任何表的 DDL")
             
-            for ddl in ddls:
+            # === Step 2: 初始化 Vanna 实例 (10%) ===
+            VannaManager._checkpoint_and_check_interrupt(db_session, dataset_id, 10, "初始化 Vanna 实例")
+            
+            # 使用 Legacy API 进行训练
+            vn = VannaManager.get_legacy_vanna(dataset_id)
+            
+            # === Step 3: 训练 DDL (10-40%) ===
+            for i, (table_name, ddl) in enumerate(ddls):
                 if ddl:
-                    await agent.agent_memory.save_text_memory(content=ddl, context=context)
+                    vn.train(ddl=ddl)
+                    
+                    # 更新进度
+                    progress = 10 + int((i + 1) / len(ddls) * 30)
+                    VannaManager._checkpoint_and_check_interrupt(
+                        db_session, dataset_id, progress,
+                        f"训练 DDL: {table_name} ({i+1}/{len(ddls)})"
+                    )
             
-            # 4. Update Status
-            dataset.training_status = "completed"
-            dataset.last_trained_at = datetime.utcnow()
+            # === Step 4: 训练文档/业务术语 (40-80%) ===
+            VannaManager._checkpoint_and_check_interrupt(db_session, dataset_id, 40, "开始训练业务术语")
+            
+            # 获取并训练业务术语
+            from app.models.metadata import BusinessTerm
+            business_terms = db_session.query(BusinessTerm).filter(
+                BusinessTerm.dataset_id == dataset_id
+            ).all()
+            
+            if business_terms:
+                for i, term in enumerate(business_terms):
+                    doc_content = f"业务术语: {term.term}\n定义: {term.definition}"
+                    vn.train(documentation=doc_content)
+                    
+                    progress = 40 + int((i + 1) / len(business_terms) * 20)
+                    VannaManager._checkpoint_and_check_interrupt(
+                        db_session, dataset_id, progress,
+                        f"训练业务术语: {term.term} ({i+1}/{len(business_terms)})"
+                    )
+            else:
+                VannaManager._checkpoint_and_check_interrupt(db_session, dataset_id, 60, "无业务术语，跳过")
+            
+            # 训练表关系文档
+            VannaManager._checkpoint_and_check_interrupt(db_session, dataset_id, 70, "生成表关系文档")
+            
+            # 生成表关系描述
+            table_relationships_doc = f"""数据库表结构：
+本数据集包含以下表：{', '.join([name for name, _ in ddls])}
+
+请根据表名和字段名生成 SQL 查询。
+"""
+            vn.train(documentation=table_relationships_doc)
+            VannaManager._checkpoint_and_check_interrupt(db_session, dataset_id, 80, "表关系文档训练完成")
+            
+            # === Step 5: 生成示例 SQLQA 对 (80-100%) ===
+            VannaManager._checkpoint_and_check_interrupt(db_session, dataset_id, 85, "生成示例 SQL 查询")
+            
+            # 为主要表生成基本查询示例
+            example_queries = []
+            for table_name, _ in ddls[:3]:  # 只为前3个表生成示例
+                example_queries.append((
+                    f"查询 {table_name} 表的所有数据",
+                    f"SELECT * FROM {table_name} LIMIT 100"
+                ))
+                example_queries.append((
+                    f"统计 {table_name} 表的总数",
+                    f"SELECT COUNT(*) as total FROM {table_name}"
+                ))
+            
+            for i, (question, sql) in enumerate(example_queries):
+                vn.train(question=question, sql=sql)
+                
+                progress = 85 + int((i + 1) / len(example_queries) * 15)
+                VannaManager._checkpoint_and_check_interrupt(
+                    db_session, dataset_id, progress,
+                    f"训练示例查询 ({i+1}/{len(example_queries)})"
+                )
+            
+            # === 完成 (100%) ===
+            dataset.status = "completed"
+            dataset.process_rate = 100
+            dataset.last_train_at = datetime.utcnow()
             db_session.commit()
-            logger.info(f"Training completed for dataset {dataset_id}")
             
-            # Clear cache after training dataset
+            VannaManager._checkpoint_and_check_interrupt(db_session, dataset_id, 100, "训练完成")
+            
+            logger.info(f"Training completed successfully for dataset {dataset_id}")
+            
+            # 清理缓存
             cleared = VannaManager.clear_cache(dataset_id)
             if cleared >= 0:
                 logger.info(f"Cleared {cleared} cached queries after training dataset {dataset_id}")
             
+        except TrainingStoppedException as e:
+            # 被用户中断
+            logger.warning(f"Training stopped by user for dataset {dataset_id}: {e}")
+            dataset.error_msg = str(e)
+            db_session.commit()
+            
+            # 记录中断日志
+            training_log = TrainingLog(
+                dataset_id=dataset_id,
+                content=f"[{dataset.process_rate}%] 训练被用户中断"
+            )
+            db_session.add(training_log)
+            db_session.commit()
+            
         except Exception as e:
-            logger.error(f"Training failed for dataset {dataset_id}: {e}")
-            dataset.training_status = "failed"
+            # 训练失败
+            logger.error(f"Training failed for dataset {dataset_id}: {e}", exc_info=True)
+            dataset.status = "failed"
+            dataset.error_msg = str(e)
+            db_session.commit()
+            
+            # 记录错误日志
+            training_log = TrainingLog(
+                dataset_id=dataset_id,
+                content=f"[{dataset.process_rate}%] 训练失败: {str(e)[:200]}"
+            )
+            db_session.add(training_log)
             db_session.commit()
 
     @staticmethod
@@ -394,6 +654,51 @@ class VannaManager:
         except Exception as e:
             logger.error(f"Failed to train business term '{term}': {e}")
             raise ValueError(f"训练问答对失败: {str(e)}")
+    
+    @staticmethod
+    def train_relationships(dataset_id: int, relationships: list[str], db_session: Session):
+        """
+        Train table relationships by adding them to Vanna's documentation memory.
+        This enhances Vanna's ability to generate correct JOIN queries.
+        
+        Args:
+            dataset_id: Dataset ID
+            relationships: List of relationship descriptions (natural language)
+            db_session: Database session
+            
+        Example relationships:
+            [
+                "The table `users` can be joined with table `orders` on the condition `users`.`id` = `orders`.`user_id`.",
+                "The table `orders` can be joined with table `products` on the condition `orders`.`product_id` = `products`.`id`."
+            ]
+        """
+        if not relationships or len(relationships) == 0:
+            logger.info(f"No relationships to train for dataset {dataset_id}")
+            return
+        
+        try:
+            # Get Legacy Vanna instance
+            vn = VannaManager.get_legacy_vanna(dataset_id)
+            
+            logger.info(f"Training {len(relationships)} relationships for dataset {dataset_id}")
+            
+            # Train each relationship as documentation
+            for i, rel_desc in enumerate(relationships, 1):
+                # Format as documentation
+                doc_content = f"表关系: {rel_desc}"
+                vn.train(documentation=doc_content)
+                logger.debug(f"Trained relationship {i}/{len(relationships)}: {rel_desc[:80]}...")
+            
+            logger.info(f"Successfully trained {len(relationships)} relationships for dataset {dataset_id}")
+            
+            # Clear cache after training relationships
+            cleared = VannaManager.clear_cache(dataset_id)
+            if cleared >= 0:
+                logger.info(f"Cleared {cleared} cached queries after training relationships")
+            
+        except Exception as e:
+            logger.error(f"Failed to train relationships: {e}")
+            raise ValueError(f"训练表关系失败: {str(e)}")
     
     @staticmethod
     def train_qa(dataset_id: int, question: str, sql: str, db_session: Session):
@@ -707,6 +1012,24 @@ class VannaManager:
                     # Serialize data
                     cleaned_rows = VannaManager._serialize_dataframe(df)
                     
+                    # Generate Business Insight (Analyst Agent)
+                    insight = None
+                    if len(df) > 0:  # 只有数据不为空时才生成分析
+                        try:
+                            execution_steps.append("正在生成业务分析...")
+                            insight = VannaManager.generate_data_insight(
+                                question=question,
+                                sql=cleaned_sql,
+                                df=df,
+                                dataset_id=dataset_id
+                            )
+                            execution_steps.append("业务分析生成完成")
+                            logger.info(f"Business insight generated: {insight[:50]}...")
+                        except Exception as insight_error:
+                            logger.warning(f"Failed to generate insight: {insight_error}")
+                            execution_steps.append("业务分析生成失败")
+                            insight = None
+                    
                     # Prepare result
                     result = {
                         "sql": cleaned_sql,
@@ -715,7 +1038,8 @@ class VannaManager:
                         "chart_type": chart_type,
                         "summary": None,
                         "steps": execution_steps,
-                        "from_cache": False
+                        "from_cache": False,
+                        "insight": insight  # 新增分析师 Agent 的输出
                     }
                     
                     # === Step D: Write to Cache ===
@@ -1222,6 +1546,102 @@ SQL:
         except Exception as e:
             logger.error(f"Failed to generate summary: {e}")
             return "总结生成失败，请稍后再试。"
+    
+    @staticmethod
+    def generate_data_insight(question: str, sql: str, df: pd.DataFrame, dataset_id: int) -> str:
+        """
+        Generate AI-powered business insight as an analyst agent.
+        Compresses data into a summary before sending to LLM to reduce token usage.
+        
+        Args:
+            question: User's original question
+            sql: SQL query that generated the data
+            df: Query result DataFrame
+            dataset_id: Dataset ID for Vanna instance
+            
+        Returns:
+            str: AI-generated business insight (Markdown format, in Chinese)
+        """
+        if df is None or df.empty:
+            return "数据为空，无法生成业务分析。"
+        
+        try:
+            # Get Vanna instance for LLM
+            vn = VannaManager.get_legacy_vanna(dataset_id)
+            
+            # === 数据压缩策略 ===
+            data_summary_parts = []
+            
+            # 1. 前 5 行数据（使用 markdown 表格格式）
+            head_df = df.head(5)
+            data_summary_parts.append("### 数据样本（前 5 行）")
+            data_summary_parts.append(head_df.to_markdown(index=False))
+            
+            # 2. 数值列的统计描述
+            numeric_cols = df.select_dtypes(include=['number']).columns
+            if len(numeric_cols) > 0:
+                describe_df = df[numeric_cols].describe()
+                data_summary_parts.append("\n### 统计描述（数值列）")
+                data_summary_parts.append(describe_df.to_markdown())
+            
+            # 3. 数据元信息
+            data_summary_parts.append(f"\n### 数据元信息")
+            data_summary_parts.append(f"- 列名：{', '.join(df.columns.tolist())}")
+            data_summary_parts.append(f"- 数据总量：{len(df)} 行")
+            
+            data_summary = "\n".join(data_summary_parts)
+            
+            # === Prompt 设计：扮演高级商业分析师 ===
+            system_prompt = """你是一位资深的商业数据分析师，擅长从数据中挖掘洞察和趋势。
+你的任务是基于用户的问题、SQL 查询逻辑和数据摘要，提供简洁的业务分析。
+
+分析要求：
+1. 使用 Markdown 格式输出
+2. 重点关注数据趋势、异常值、关键发现
+3. 用业务语言，避免技术术语
+4. 篇幅控制在 150 字以内
+5. 直接输出分析内容，不要添加"分析："等前缀
+6. 使用中文"""
+            
+            user_prompt = f"""用户问题：
+{question}
+
+SQL 查询逻辑：
+```sql
+{sql}
+```
+
+{data_summary}
+
+请基于以上信息，提供业务洞察分析："""
+            
+            # === 调用 LLM ===
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+            
+            insight = vn.submit_prompt(messages)
+            
+            # === 清理和验证 ===
+            insight = insight.strip()
+            
+            # 移除常见前缀
+            prefixes_to_remove = ["分析：", "业务洞察：", "AI 分析：", "数据洞察：", "总结："]
+            for prefix in prefixes_to_remove:
+                if insight.startswith(prefix):
+                    insight = insight[len(prefix):].strip()
+            
+            # 长度限制（防止 LLM 忽略指令）
+            if len(insight) > 300:
+                insight = insight[:300] + "..."
+            
+            logger.info(f"Generated insight for dataset {dataset_id}: {insight[:50]}...")
+            return insight
+            
+        except Exception as e:
+            logger.error(f"Failed to generate data insight: {e}")
+            return "业务分析生成失败，请稍后再试。"
     
     @staticmethod
     def analyze_relationships(dataset_id: int, table_names: list[str], db_session: Session) -> dict:

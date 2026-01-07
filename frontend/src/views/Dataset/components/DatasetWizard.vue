@@ -60,11 +60,11 @@
         <el-button
           v-if="activeStep === 1"
           type="primary"
-          @click="handleSaveAndTrain"
+          @click="handleSaveAndModeling"
           :loading="saving"
           :disabled="selectedTables.length === 0"
         >
-          保存并训练
+          保存并建模
         </el-button>
       </div>
     </template>
@@ -73,6 +73,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Loading } from '@element-plus/icons-vue'
 import { getDataSourceList, type DataSource } from '@/api/datasource'
@@ -89,6 +90,7 @@ interface Emits {
 
 const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
+const router = useRouter()
 
 const dialogVisible = ref(false)
 const activeStep = ref(0)
@@ -130,7 +132,8 @@ const fetchTables = async (datasourceId: number) => {
   loadingTables.value = true
   try {
     const tables = await getDbTables(datasourceId)
-    tableList.value = tables.map((t: string) => ({ key: t, label: t }))
+    // 后端返回的是 TableInfo[] 包含 name 和 columns
+    tableList.value = tables.map((t) => ({ key: t.name, label: t.name }))
   } catch (error) {
     ElMessage.error('获取数据表失败')
   } finally {
@@ -185,7 +188,7 @@ const prevStep = () => {
   }
 }
 
-const handleSaveAndTrain = async () => {
+const handleSaveAndModeling = async () => {
   if (!createdDatasetId.value) return
   
   saving.value = true
@@ -193,12 +196,12 @@ const handleSaveAndTrain = async () => {
     // 1. 更新表配置
     await updateDatasetTables(createdDatasetId.value, selectedTables.value)
     
-    // 2. 触发训练
-    await trainDataset(createdDatasetId.value)
-    
-    ElMessage.success('保存成功，开始后台训练')
+    ElMessage.success('数据集创建成功，即将进入可视化建模')
     emit('refresh')
     handleClose()
+    
+    // 2. 跳转到可视化建模页面
+    router.push(`/datasets/modeling/${createdDatasetId.value}`)
   } catch (error) {
     ElMessage.error('操作失败')
   } finally {

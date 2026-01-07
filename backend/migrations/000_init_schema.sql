@@ -23,11 +23,15 @@ CREATE TABLE IF NOT EXISTS datasources (
 -- 创建数据集表
 CREATE TABLE IF NOT EXISTS datasets (
     id INTEGER PRIMARY KEY AUTO_INCREMENT,
-    name VARCHAR(100) NOT NULL COMMENT '数据集名称',
+    name VARCHAR(255) NOT NULL COMMENT '数据集名称',
     datasource_id INTEGER NOT NULL COMMENT '关联的数据源ID',
-    vanna_model_name VARCHAR(100) UNIQUE COMMENT 'Vanna 模型名称',
-    trained_tables TEXT COMMENT '已训练的表列表（JSON格式）',
-    is_trained BOOLEAN DEFAULT FALSE COMMENT '是否已训练',
+    collection_name VARCHAR(255) UNIQUE COMMENT 'Vanna collection名称',
+    schema_config JSON COMMENT '已选择的表列表（JSON格式）',
+    status VARCHAR(50) DEFAULT 'pending' COMMENT '训练状态: pending, training, completed, failed, paused',
+    modeling_config JSON COMMENT '存储前端可视化建模的画布数据(nodes/edges)',
+    process_rate INTEGER DEFAULT 0 COMMENT '训练进度百分比 0-100',
+    error_msg TEXT COMMENT '错误信息',
+    last_train_at DATETIME COMMENT '最后训练时间',
     owner_id INTEGER COMMENT '所有者ID',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -43,6 +47,26 @@ CREATE TABLE IF NOT EXISTS dashboards (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仪表盘表';
+
+-- 创建业务术语表
+CREATE TABLE IF NOT EXISTS business_terms (
+    id INTEGER PRIMARY KEY AUTO_INCREMENT,
+    dataset_id INTEGER NOT NULL COMMENT '关联的数据集ID',
+    term VARCHAR(255) NOT NULL COMMENT '术语名称',
+    definition TEXT NOT NULL COMMENT '术语定义',
+    owner_id INTEGER COMMENT '所有者ID',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    FOREIGN KEY (dataset_id) REFERENCES datasets(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='业务术语表';
+
+-- 创建训练日志表
+CREATE TABLE IF NOT EXISTS training_logs (
+    id INTEGER PRIMARY KEY AUTO_INCREMENT,
+    dataset_id INTEGER NOT NULL COMMENT '关联的数据集ID',
+    content TEXT NOT NULL COMMENT '日志内容',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    FOREIGN KEY (dataset_id) REFERENCES datasets(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='训练日志表';
 
 -- 创建仪表盘卡片表
 CREATE TABLE IF NOT EXISTS dashboard_cards (
@@ -67,24 +91,51 @@ CREATE TABLE IF NOT EXISTS dashboard_cards (
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTO_INCREMENT,
     username VARCHAR(50) NOT NULL UNIQUE COMMENT '用户名',
-    email VARCHAR(100) UNIQUE COMMENT '邮箱',
+    email VARCHAR(255) UNIQUE COMMENT '邮箱',
     hashed_password VARCHAR(255) NOT NULL COMMENT '加密后的密码',
-    full_name VARCHAR(100) COMMENT '全名',
+    full_name VARCHAR(255) COMMENT '全名',
     is_active BOOLEAN DEFAULT TRUE COMMENT '是否激活',
     is_superuser BOOLEAN DEFAULT FALSE COMMENT '是否超级管理员',
+    is_deleted BOOLEAN DEFAULT FALSE COMMENT '软删除标记',
+    role VARCHAR(50) DEFAULT 'user' COMMENT '用户角色',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
+
+-- 创建聊天消息表
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTO_INCREMENT,
+    dataset_id INTEGER NOT NULL COMMENT '关联的数据集ID',
+    user_id INTEGER NOT NULL COMMENT '用户ID',
+    owner_id INTEGER COMMENT '所有者ID',
+    question TEXT NOT NULL COMMENT '用户问题',
+    answer TEXT COMMENT 'AI回答',
+    sql TEXT COMMENT 'SQL语句',
+    chart_type VARCHAR(50) COMMENT '图表类型',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    FOREIGN KEY (dataset_id) REFERENCES datasets(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='聊天消息表';
 
 -- 创建索引
 CREATE INDEX idx_datasource_owner ON datasources(owner_id);
 CREATE INDEX idx_dataset_datasource ON datasets(datasource_id);
 CREATE INDEX idx_dataset_owner ON datasets(owner_id);
+CREATE INDEX idx_dataset_collection_name ON datasets(collection_name);
+CREATE INDEX idx_business_term_dataset ON business_terms(dataset_id);
+CREATE INDEX idx_business_term_owner ON business_terms(owner_id);
+CREATE INDEX idx_training_log_dataset ON training_logs(dataset_id);
+CREATE INDEX idx_training_log_created ON training_logs(created_at);
 CREATE INDEX idx_dashboard_owner ON dashboards(owner_id);
 CREATE INDEX idx_card_dashboard ON dashboard_cards(dashboard_id);
 CREATE INDEX idx_card_dataset ON dashboard_cards(dataset_id);
 CREATE INDEX idx_user_username ON users(username);
 CREATE INDEX idx_user_email ON users(email);
+CREATE INDEX idx_chat_message_dataset ON chat_messages(dataset_id);
+CREATE INDEX idx_chat_message_user ON chat_messages(user_id);
+CREATE INDEX idx_chat_message_owner ON chat_messages(owner_id);
+CREATE INDEX idx_chat_message_created ON chat_messages(created_at);
 
 -- 插入默认管理员账户（密码: admin123）
 INSERT IGNORE INTO users (username, email, hashed_password, full_name, is_superuser) 

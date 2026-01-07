@@ -118,7 +118,7 @@ def test_flow():
             target_ds = next((d for d in datasets if d["id"] == dataset_id), None)
             
             if target_ds:
-                status = target_ds["training_status"]
+                status = target_ds["status"]
                 print(f"[{i+1}/{max_retries}] Status: {status}")
                 
                 if status == "completed":

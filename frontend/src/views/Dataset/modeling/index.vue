@@ -19,9 +19,13 @@
           <el-icon><Delete /></el-icon>
           <span class="ml-1">清空画布</span>
         </el-button>
-        <el-button type="primary" size="small" @click="handleSave" class="!bg-blue-600 hover:!bg-blue-500">
+        <el-button size="small" @click="handleAutoLayout" :disabled="nodes.length < 2" class="!bg-gradient-to-r !from-green-500 !to-emerald-600 hover:!from-green-400 hover:!to-emerald-500 !text-white !border-none">
+          <el-icon><Rank /></el-icon>
+          <span class="ml-1">一键排版</span>
+        </el-button>
+        <el-button type="primary" size="small" @click="() => handleSave()" :loading="isSaving" class="!bg-blue-600 hover:!bg-blue-500">
           <el-icon><Select /></el-icon>
-          <span class="ml-1">保存模型</span>
+          <span class="ml-1">保存布局</span>
         </el-button>
       </div>
     </div>
@@ -342,11 +346,18 @@
         </div>
       </template>
     </el-dialog>
+    
+    <!-- 训练进度对话框 -->
+    <TrainingProgressDialog
+      v-model="progressDialogVisible"
+      :dataset-id="currentDatasetId || 0"
+      @refresh="() => {}"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, markRaw } from 'vue'
+import { ref, computed, watch, markRaw, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -358,15 +369,20 @@ import '@vue-flow/controls/dist/style.css'
 import '@vue-flow/minimap/dist/style.css'
 import { 
   ArrowLeft, Delete, Select, Files, Grid, Setting, Plus, 
-  InfoFilled, MagicStick, Check, Search, DocumentCopy 
+  InfoFilled, MagicStick, Check, Search, DocumentCopy, Rank 
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, ElLoading } from 'element-plus'
 import TableNode from './components/TableNode.vue'
+import TrainingProgressDialog from '../components/TrainingProgressDialog.vue'
 import type { Node, Edge } from '@vue-flow/core'
 import { 
   analyzeRelationships, 
   createView, 
   getDbTables,
+  updateModelingConfig,
+  getDataset,
+  trainDataset,
+  updateDatasetTables,
   type RelationshipEdge,
   type TableNode as TableNodeType
 } from '@/api/dataset'
@@ -375,7 +391,7 @@ const router = useRouter()
 const route = useRoute()
 
 // VueFlow 相关
-const { addNodes, addEdges, removeNodes, removeEdges, findNode } = useVueFlow()
+const { addNodes, addEdges, removeNodes, removeEdges, findNode, toObject, fromObject, onNodesChange, onEdgesChange } = useVueFlow()
 
 // 注册自定义节点类型
 const nodeTypes = {
@@ -400,6 +416,9 @@ const wideTableDialogVisible = ref(false) // 宽表 Dialog 显示状态
 const wideTableName = ref('') // 宽表名称
 const isOptimizingSQL = ref(false) // AI 优化 SQL 状态
 const sqlOptimizationTip = ref('') // SQL 优化提示
+const isSaving = ref(false) // 保存状态
+const hasUnsavedChanges = ref(false) // 是否有未保存的更改
+const progressDialogVisible = ref(false) // 训练进度对话框
 
 // 表数据（将从 API 加载）
 const availableTables = ref<any[]>([])
@@ -413,13 +432,90 @@ const initFromRoute = async () => {
   
   if (datasetId) {
     currentDatasetId.value = parseInt(datasetId)
-    // TODO: 加载 dataset 信息，获取 datasource_id
+    // 加载 dataset 信息，获取 datasource_id 和 modeling_config
+    await loadDatasetConfig()
   } else if (datasourceId) {
     currentDatasourceId.value = parseInt(datasourceId)
   }
   
   // 加载表列表
   await loadTables()
+}
+
+// 加载数据集配置（包括建模数据）
+const loadDatasetConfig = async () => {
+  if (!currentDatasetId.value) return
+  
+  try {
+    const dataset = await getDataset(currentDatasetId.value)
+    console.log('Loaded dataset:', dataset)
+    
+    // 设置 datasource_id
+    if (dataset.datasource_id) {
+      currentDatasourceId.value = dataset.datasource_id
+    }
+    
+    // 设置数据集名称
+    if (dataset.name) {
+      currentDataset.value = dataset.name
+    }
+    
+    // 恢复建模数据
+    if (dataset.modeling_config && Object.keys(dataset.modeling_config).length > 0) {
+      console.log('Restoring modeling config:', dataset.modeling_config)
+      
+      // 使用 fromObject 恢复完整状态（包括 viewport）
+      try {
+        fromObject(dataset.modeling_config)
+        console.log('Restored flow state using fromObject')
+        
+        // 如果有节点，生成 SQL 预览
+        if (nodes.value.length > 0) {
+          setTimeout(() => {
+            generateSQL()
+            ElMessage.success('已加载之前的建模配置')
+          }, 500)
+        }
+      } catch (error) {
+        console.error('Failed to restore using fromObject, falling back to manual restore:', error)
+        
+        // 如果 fromObject 失败，使用手动恢复
+        if (dataset.modeling_config.nodes && Array.isArray(dataset.modeling_config.nodes)) {
+          nodes.value = dataset.modeling_config.nodes.map((n: any) => ({
+            id: n.id,
+            type: n.type || 'tableNode',
+            position: n.position || { x: 0, y: 0 },
+            data: n.data
+          }))
+          console.log('Restored nodes:', nodes.value)
+        }
+        
+        if (dataset.modeling_config.edges && Array.isArray(dataset.modeling_config.edges)) {
+          edges.value = dataset.modeling_config.edges.map((e: any) => ({
+            id: e.id,
+            source: e.source,
+            target: e.target,
+            label: e.label,
+            type: e.type || 'smoothstep',
+            animated: e.animated !== false,
+            style: e.style || { stroke: '#3b82f6', strokeWidth: 2 },
+            data: e.data
+          }))
+          console.log('Restored edges:', edges.value)
+        }
+        
+        if (nodes.value.length > 0) {
+          setTimeout(() => {
+            generateSQL()
+            ElMessage.success('已加载之前的建模配置')
+          }, 500)
+        }
+      }
+    }
+  } catch (error: any) {
+    console.error('Failed to load dataset config:', error)
+    // 不弹出错误提示，静默失败
+  }
 }
 
 // 加载数据源的表列表
@@ -740,6 +836,132 @@ const handleClearCanvas = async () => {
   }
 }
 
+// 一键排版 - 自动整理节点布局
+const handleAutoLayout = () => {
+  if (nodes.value.length < 2) {
+    ElMessage.warning('请至少添加两个表')
+    return
+  }
+  
+  const loading = ElLoading.service({
+    lock: true,
+    text: '正在自动排版...',
+    background: 'rgba(0, 0, 0, 0.7)'
+  })
+  
+  try {
+    // Dagre 布局算法 - 层次化布局
+    const nodeWidth = 220 // 节点宽度
+    const nodeHeight = 180 // 节点高度
+    const horizontalGap = 150 // 水平间距
+    const verticalGap = 100 // 垂直间距
+    
+    // 构建图的邻接表
+    const graph = new Map<string, Set<string>>()
+    const inDegree = new Map<string, number>()
+    
+    // 初始化
+    nodes.value.forEach(node => {
+      graph.set(node.id, new Set())
+      inDegree.set(node.id, 0)
+    })
+    
+    // 构建邻接表和入度
+    edges.value.forEach(edge => {
+      const sourceId = edge.source
+      const targetId = edge.target
+      graph.get(sourceId)?.add(targetId)
+      inDegree.set(targetId, (inDegree.get(targetId) || 0) + 1)
+    })
+    
+    // 拓扑排序分层
+    const layers: string[][] = []
+    const queue: string[] = []
+    const visited = new Set<string>()
+    
+    // 找到所有入度为 0 的节点（根节点）
+    inDegree.forEach((degree, nodeId) => {
+      if (degree === 0) {
+        queue.push(nodeId)
+      }
+    })
+    
+    // 如果没有根节点（可能有环），随机选择一个起始节点
+    if (queue.length === 0) {
+      queue.push(nodes.value[0].id)
+    }
+    
+    // BFS 分层
+    while (queue.length > 0) {
+      const currentLayer: string[] = []
+      const nextQueue: string[] = []
+      
+      queue.forEach(nodeId => {
+        if (visited.has(nodeId)) return
+        visited.add(nodeId)
+        currentLayer.push(nodeId)
+        
+        // 将子节点加入下一层
+        graph.get(nodeId)?.forEach(childId => {
+          if (!visited.has(childId)) {
+            nextQueue.push(childId)
+          }
+        })
+      })
+      
+      if (currentLayer.length > 0) {
+        layers.push(currentLayer)
+      }
+      
+      queue.length = 0
+      queue.push(...nextQueue)
+      
+      // 防止死循环
+      if (layers.length > nodes.value.length) break
+    }
+    
+    // 添加未访问的节点（孤立节点）
+    const unvisitedNodes = nodes.value.filter(n => !visited.has(n.id))
+    if (unvisitedNodes.length > 0) {
+      layers.push(unvisitedNodes.map(n => n.id))
+    }
+    
+    // 计算每层的布局
+    let currentY = 50 // 起始 Y 坐标
+    const updatedNodes = [...nodes.value]
+    
+    layers.forEach((layer, layerIndex) => {
+      const layerWidth = layer.length * (nodeWidth + horizontalGap) - horizontalGap
+      const startX = Math.max(50, (window.innerWidth * 0.6 - layerWidth) / 2) // 居中
+      
+      layer.forEach((nodeId, index) => {
+        const nodeIndex = updatedNodes.findIndex(n => n.id === nodeId)
+        if (nodeIndex !== -1) {
+          updatedNodes[nodeIndex] = {
+            ...updatedNodes[nodeIndex],
+            position: {
+              x: startX + index * (nodeWidth + horizontalGap),
+              y: currentY
+            }
+          }
+        }
+      })
+      
+      currentY += nodeHeight + verticalGap
+    })
+    
+    // 应用新的布局
+    nodes.value = updatedNodes
+    
+    ElMessage.success('排版完成')
+  } catch (error) {
+    console.error('自动排版失败:', error)
+    ElMessage.error('自动排版失败')
+  } finally {
+    loading.close()
+  }
+}
+
 // AI 自动分析关联
 const handleAutoAnalyze = async () => {
   if (nodes.value.length < 2) {
@@ -838,6 +1060,14 @@ const handleAutoAnalyze = async () => {
       // 生成 SQL 预览
       generateSQL()
       
+      // AI 分析后自动保存
+      if (currentDatasetId.value && newEdges.length > 0) {
+        setTimeout(async () => {
+          await handleSave(true) // 静默保存，不显示提示
+          console.log('AI 分析结果已自动保存')
+        }, 1000)
+      }
+      
       // 提示用户调整位置
       if (newEdges.length > 0) {
         setTimeout(() => {
@@ -900,54 +1130,17 @@ const generateSQL = () => {
     return
   }
   
-  // 收集所有字段并去重
-  const allFields: string[] = []
-  const seenColumns = new Set<string>()  // 跟踪已添加的列名
-  const columnCounts = new Map<string, number>()  // 跟踪列名出现次数
-  
-  // 第一遍：统计列名出现次数
-  nodes.value.forEach(node => {
-    node.data.fields.forEach((field: any) => {
-      columnCounts.set(field.name, (columnCounts.get(field.name) || 0) + 1)
-    })
-  })
-  
-  // 第二遍：生成字段列表，重复列名添加表别名前缀
-  nodes.value.forEach(node => {
-    const tableName = node.data.tableName
-    const alias = tableAliases.get(tableName)!
-    
-    node.data.fields.forEach((field: any) => {
-      const fullField = `${alias}.${field.name}`
-      if (seenColumns.has(fullField)) {
-        return  // 跳过已添加的字段
-      }
-      seenColumns.add(fullField)
-      
-      // 如果列名在多个表中出现，添加表别名作为前缀
-      if (columnCounts.get(field.name)! > 1) {
-        allFields.push(`${fullField} AS ${alias}_${field.name}`)
-      } else {
-        allFields.push(fullField)
-      }
-    })
-  })
-  
-  // 构建 SELECT 子句
-  const selectClause = allFields.join(',\n  ')
-  
-  // 构建 FROM/JOIN 子句
+  // ========== 关键修复：先构建 JOIN 子句，确定哪些表会被包含 ==========
   const firstNode = nodes.value[0]
   const firstTable = firstNode.data.tableName
   const firstAlias = tableAliases.get(firstTable)!
   
-  let sql = `SELECT \n  ${selectClause}\nFROM ${firstTable} ${firstAlias}`
-  
-  // 已处理的表
+  // 已处理的表（会出现在 FROM/JOIN 子句中的表）
   const processedTables = new Set([firstTable])
   const pendingEdges = [...edges.value]
+  const joinClauses: string[] = []
   
-  // 循环直到所有 edge 被处理或无法继续
+  // 循环处理所有 edge
   let maxIterations = pendingEdges.length * 2
   let iterations = 0
   
@@ -979,24 +1172,80 @@ const generateSQL = () => {
         processedTables.add(sourceTable)
         progressMade = true
       } else if (processedTables.has(sourceTable) && processedTables.has(targetTable)) {
+        // 两个表都已处理，跳过此 edge
         pendingEdges.splice(i, 1)
         progressMade = true
         continue
       } else {
+        // 两个表都未处理，暂时跳过
         continue
       }
       
       if (joinTable && joinCondition) {
         const joinType = edge.data?.type === 'inner' ? 'INNER JOIN' : 'LEFT JOIN'
-        sql += `\n${joinType} ${joinTable} ${joinTableAlias} ON ${joinCondition}`
+        joinClauses.push(`${joinType} ${joinTable} ${joinTableAlias} ON ${joinCondition}`)
         pendingEdges.splice(i, 1)
       }
     }
     
     if (!progressMade) {
       console.warn('SQL generation stalled. Remaining edges:', pendingEdges)
+      // 如果有未处理的边且无法继续，说明存在孤立的子图
+      // 警告用户但继续生成 SQL
+      if (pendingEdges.length > 0) {
+        ElMessage.warning('部分表未连接到主表，将被排除在 SQL 之外')
+      }
       break
     }
+  }
+  
+  // ========== 只为已处理的表生成字段列表 ==========
+  const allFields: string[] = []
+  const seenColumns = new Set<string>()
+  const columnCounts = new Map<string, number>()
+  
+  // 第一遍：只统计已处理表的列名出现次数
+  nodes.value.forEach(node => {
+    const tableName = node.data.tableName
+    if (!processedTables.has(tableName)) {
+      return  // 跳过未连接的表
+    }
+    node.data.fields.forEach((field: any) => {
+      columnCounts.set(field.name, (columnCounts.get(field.name) || 0) + 1)
+    })
+  })
+  
+  // 第二遍：只为已处理的表生成字段
+  nodes.value.forEach(node => {
+    const tableName = node.data.tableName
+    if (!processedTables.has(tableName)) {
+      return  // 跳过未连接的表
+    }
+    
+    const alias = tableAliases.get(tableName)!
+    
+    node.data.fields.forEach((field: any) => {
+      const fullField = `${alias}.${field.name}`
+      if (seenColumns.has(fullField)) {
+        return
+      }
+      seenColumns.add(fullField)
+      
+      // 如果列名在多个表中出现，添加表别名前缀
+      if (columnCounts.get(field.name)! > 1) {
+        allFields.push(`${fullField} AS ${alias}_${field.name}`)
+      } else {
+        allFields.push(fullField)
+      }
+    })
+  })
+  
+  // 构建最终 SQL
+  const selectClause = allFields.join(',\n  ')
+  let sql = `SELECT \n  ${selectClause}\nFROM ${firstTable} ${firstAlias}`
+  
+  if (joinClauses.length > 0) {
+    sql += '\n' + joinClauses.join('\n')
   }
   
   generatedSQL.value = sql
@@ -1074,11 +1323,11 @@ const handleCreateView = async () => {
       sql: sql
     })
     
-    wideTableDialogVisible.value = false
+   wideTableDialogVisible.value = false
     
     // 提示是否训练
     await ElMessageBox.confirm(
-      `宽表 v_${wideTableName.value} 已创建成功！\n\n是否立即将该视图添加到数据集并开始训练？`,
+      `宽表 v_${wideTableName.value} 已创建成功!\n\n是否立即将该视图添加到数据集并开始训练?`,
       '创建成功',
       {
         confirmButtonText: '立即训练',
@@ -1087,8 +1336,37 @@ const handleCreateView = async () => {
       }
     )
     
-    // 跳转到数据集页面
-    router.push('/datasets')
+    // 用户点击了"立即训练"
+    if (!currentDatasetId.value) {
+      ElMessage.warning('未找到数据集ID，无法开始训练')
+      router.push('/datasets')
+      return
+    }
+    
+    // 更新数据集表配置（添加新创建的视图）
+    try {
+      // 获取当前数据集的表配置
+      const dataset = await getDataset(currentDatasetId.value)
+      const currentTables = dataset.schema_config || []
+      const viewName = `v_${wideTableName.value}`
+      
+      // 如果视图不在列表中，添加进去
+      if (!currentTables.includes(viewName)) {
+        currentTables.push(viewName)
+        await updateDatasetTables(currentDatasetId.value, currentTables)
+      }
+      
+      // 触发训练
+      await trainDataset(currentDatasetId.value)
+      ElMessage.success('已触发训练')
+      
+      // 打开训练进度对话框
+      progressDialogVisible.value = true
+      
+    } catch (error: any) {
+      console.error('训练失败:', error)
+      ElMessage.error(error?.message || '触发训练失败')
+    }
   } catch (error: any) {
     if (error !== 'cancel') {
       console.error('创建视图失败:', error)
@@ -1210,8 +1488,65 @@ const handleAIOptimizeSQL = async () => {
 }
 
 // 保存模型
-const handleSave = () => {
-  ElMessage.success('模型已保存')
+const handleSave = async (isAutoSave = false) => {
+  if (!currentDatasetId.value) {
+    if (!isAutoSave) {
+      ElMessage.error('未找到数据集 ID，无法保存')
+    }
+    return
+  }
+  
+  isSaving.value = true
+  
+  const loading = isAutoSave ? null : ElLoading.service({
+    lock: true,
+    text: '正在保存建模配置...',
+    background: 'rgba(0, 0, 0, 0.7)'
+  })
+  
+  try {
+    // 使用 VueFlow 的 toObject() 获取完整状态（包括 viewport）
+    const flowObject = toObject()
+    
+    // 准备保存数据
+    const modelingConfig = {
+      nodes: flowObject.nodes.map(n => ({
+        id: n.id,
+        type: n.type,
+        position: n.position,
+        data: n.data
+      })),
+      edges: flowObject.edges.map(e => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        label: e.label,
+        type: e.type,
+        animated: e.animated,
+        style: e.style,
+        data: e.data
+      })),
+      viewport: flowObject.viewport // 保存视口位置和缩放
+    }
+    
+    console.log('Saving modeling config:', modelingConfig)
+    
+    await updateModelingConfig(currentDatasetId.value, modelingConfig)
+    
+    hasUnsavedChanges.value = false
+    
+    if (!isAutoSave) {
+      ElMessage.success('建模配置已保存')
+    }
+  } catch (error: any) {
+    console.error('保存失败:', error)
+    if (!isAutoSave) {
+      ElMessage.error(error?.message || '保存失败')
+    }
+  } finally {
+    isSaving.value = false
+    loading?.close()
+  }
 }
 
 // 返回
@@ -1219,8 +1554,54 @@ const handleBack = () => {
   router.back()
 }
 
+// 自动保存防抖计时器
+let autoSaveTimer: number | null = null
+const AUTO_SAVE_DELAY = 5000 // 5秒后自动保存
+
+// 监听画布变化并触发自动保存
+const scheduleAutoSave = () => {
+  if (!currentDatasetId.value) return
+  
+  hasUnsavedChanges.value = true
+  
+  // 清除之前的计时器
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer)
+  }
+  
+  // 设置新的计时器
+  autoSaveTimer = setTimeout(async () => {
+    if (hasUnsavedChanges.value) {
+      await handleSave(true)
+      console.log('自动保存完成')
+    }
+  }, AUTO_SAVE_DELAY)
+}
+
 // 页面加载时初始化
 initFromRoute()
+
+// 监听节点和连线的变化
+onMounted(() => {
+  // 监听节点变化
+  onNodesChange(() => {
+    scheduleAutoSave()
+  })
+  
+  // 监听连线变化
+  onEdgesChange(() => {
+    scheduleAutoSave()
+  })
+  
+  console.log('已启用自动保存（变化后 5 秒自动保存）')
+})
+
+// 清理计时器
+onUnmounted(() => {
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer)
+  }
+})
 </script>
 
 <style scoped>

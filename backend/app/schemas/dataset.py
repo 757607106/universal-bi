@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from datetime import datetime
 
 class DatasetBase(BaseModel):
@@ -16,8 +16,11 @@ class DatasetResponse(DatasetBase):
     datasource_id: Optional[int] = None
     collection_name: Optional[str] = None
     schema_config: Optional[List[str]] = None
-    training_status: str
-    last_trained_at: Optional[datetime] = None
+    status: str = "pending"  # pending, training, completed, failed, paused
+    modeling_config: Optional[Dict] = None  # 存储前端可视化建模的画布数据(nodes/edges)
+    process_rate: int = 0  # 训练进度百分比 0-100
+    error_msg: Optional[str] = None
+    last_train_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -70,3 +73,26 @@ class CreateViewRequest(BaseModel):
     datasource_id: int
     view_name: str
     sql: str
+
+
+# Training Log Schemas
+class TrainingLogResponse(BaseModel):
+    id: int
+    dataset_id: int
+    content: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DatasetUpdateStatus(BaseModel):
+    """Update dataset training status"""
+    status: Optional[str] = None  # pending, training, completed, failed, paused
+    process_rate: Optional[int] = None
+    error_msg: Optional[str] = None
+
+
+class DatasetUpdateModelingConfig(BaseModel):
+    """Update dataset modeling config"""
+    modeling_config: Dict

@@ -12,6 +12,7 @@ export interface ChatResponse {
   chart_type: string
   steps?: string[]  // Execution steps tracking
   from_cache?: boolean  // Whether result is from cache
+  insight?: string  // Business insight from analyst agent
 }
 
 export interface SummaryRequest {
@@ -49,7 +50,8 @@ export const sendChat = async (data: { dataset_id: number, question: string }) =
     data: null,  // 不再包装
     chart_type: responseData.chart_type,
     steps: responseData.steps || [],
-    from_cache: responseData.from_cache || false
+    from_cache: responseData.from_cache || false,
+    insight: responseData.insight  // 业务分析
   } as ChatResponse
 }
 

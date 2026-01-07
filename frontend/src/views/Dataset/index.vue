@@ -26,10 +26,14 @@
                 <el-icon class="text-blue-500"><Files /></el-icon>
                 <span class="font-bold text-gray-900 dark:text-slate-100 truncate">{{ dataset.name }}</span>
               </div>
-              <el-tag :type="getStatusType(dataset.training_status)" effect="dark" size="small" class="!bg-gray-100 dark:!bg-slate-700 !border-gray-200 dark:!border-slate-600 !text-gray-700 dark:!text-slate-200">
+              <el-tag :type="getStatusType(dataset.status || dataset.training_status)" effect="dark" size="small">
                 <div class="flex items-center gap-1">
-                  <el-icon v-if="dataset.training_status === 'training'" class="is-loading"><Loading /></el-icon>
-                  {{ getStatusText(dataset.training_status) }}
+                  <el-icon v-if="(dataset.status || dataset.training_status) === 'training'" class="is-loading"><Loading /></el-icon>
+                  <el-icon v-else-if="(dataset.status || dataset.training_status) === 'completed'" class="text-green-500"><CircleCheck /></el-icon>
+                  <el-icon v-else-if="(dataset.status || dataset.training_status) === 'failed'" class="text-red-500"><CircleClose /></el-icon>
+                  <el-icon v-else-if="(dataset.status || dataset.training_status) === 'paused'" class="text-gray-400"><VideoPause /></el-icon>
+                  <el-icon v-else-if="(dataset.status || dataset.training_status) === 'pending'" class="text-orange-500"><Clock /></el-icon>
+                  {{ getStatusText(dataset.status || dataset.training_status) }}
                 </div>
               </el-tag>
             </div>
@@ -48,7 +52,7 @@
 
             <div class="flex items-center justify-between text-sm">
               <span class="text-gray-500 dark:text-slate-400">上次训练</span>
-              <span class="text-gray-600 dark:text-slate-300">{{ formatDate(dataset.last_trained_at) }}</span>
+              <span class="text-gray-600 dark:text-slate-300">{{ formatDate(dataset.last_train_at || dataset.last_trained_at) }}</span>
             </div>
             
             <div class="pt-4 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2">
@@ -56,10 +60,17 @@
                 <el-icon class="mr-1"><MagicStick /></el-icon>
                 可视化建模
               </el-button>
-              <el-button v-if="dataset.training_status !== 'training'" size="small" @click="handleRetrain(dataset)" class="!bg-gray-100 dark:!bg-slate-700 hover:!bg-gray-200 dark:hover:!bg-slate-600 !border-gray-200 dark:!border-slate-600 !text-gray-700 dark:!text-slate-200">
+              <el-button v-if="(dataset.status || dataset.training_status) !== 'training'" size="small" @click="handleRetrain(dataset)" class="!bg-gray-100 dark:!bg-slate-700 hover:!bg-gray-200 dark:hover:!bg-slate-600 !border-gray-200 dark:!border-slate-600 !text-gray-700 dark:!text-slate-200">
                 重新训练
               </el-button>
-              <el-button size="small" type="primary" plain class="!bg-blue-50 dark:!bg-blue-500/10 !border-blue-200 dark:!border-blue-500/50 !text-blue-600 dark:!text-blue-400 hover:!bg-blue-100 dark:hover:!bg-blue-500/20">详情</el-button>
+              <el-button v-if="(dataset.status || dataset.training_status) === 'training'" size="small" type="primary" @click="handleShowProgress(dataset)" class="!bg-blue-500 hover:!bg-blue-600">
+                <el-icon class="mr-1"><View /></el-icon>
+                查看进度
+              </el-button>
+              <el-button size="small" type="danger" plain @click="handleDelete(dataset)" class="!bg-red-50 dark:!bg-red-500/10 !border-red-200 dark:!border-red-500/50 !text-red-600 dark:!text-red-400 hover:!bg-red-100 dark:hover:!bg-red-500/20">
+                <el-icon class="mr-1"><Delete /></el-icon>
+                删除
+              </el-button>
             </div>
           </div>
         </el-card>
@@ -71,6 +82,12 @@
         v-model="wizardVisible"
         @refresh="fetchDatasets"
       />
+
+      <TrainingProgressDialog
+        v-model="progressDialogVisible"
+        :dataset-id="selectedDatasetId"
+        @refresh="fetchDatasets"
+      />
     </div>
   </div>
 </template>
@@ -78,13 +95,16 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Plus, Files, Loading, MagicStick } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
-import { getDatasetList, trainDataset, type Dataset } from '@/api/dataset'
+import { Plus, Files, Loading, MagicStick, View, CircleCheck, CircleClose, VideoPause, Clock, Delete } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { getDatasetList, trainDataset, deleteDataset, type Dataset } from '@/api/dataset'
 import DatasetWizard from './components/DatasetWizard.vue'
+import TrainingProgressDialog from './components/TrainingProgressDialog.vue'
 
 const router = useRouter()
 const wizardVisible = ref(false)
+const progressDialogVisible = ref(false)
+const selectedDatasetId = ref(0)
 const datasetList = ref<Dataset[]>([])
 let pollingTimer: ReturnType<typeof setInterval> | null = null
 
@@ -99,7 +119,7 @@ const fetchDatasets = async () => {
 }
 
 const checkPolling = (list: Dataset[]) => {
-  const hasTraining = list.some(d => d.training_status === 'training' || d.training_status === 'pending')
+  const hasTraining = list.some(d => (d.status || d.training_status) === 'training' || (d.status || d.training_status) === 'pending')
   if (hasTraining && !pollingTimer) {
     pollingTimer = setInterval(fetchDatasets, 3000)
   } else if (!hasTraining && pollingTimer) {
@@ -112,9 +132,48 @@ const handleRetrain = async (dataset: Dataset) => {
   try {
     await trainDataset(dataset.id)
     ElMessage.success('已触发重新训练')
+    
+    // 打开进度对话框
+    selectedDatasetId.value = dataset.id
+    progressDialogVisible.value = true
+    
     fetchDatasets()
   } catch (error) {
     ElMessage.error('触发训练失败')
+  }
+}
+
+const handleShowProgress = (dataset: Dataset) => {
+  selectedDatasetId.value = dataset.id
+  progressDialogVisible.value = true
+}
+
+const handleDelete = async (dataset: Dataset) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除数据集 "${dataset.name}" 吗？
+
+删除后将无法恢复，包括：
+- 已训练的数据
+- 业务术语
+- 建模配置
+- 训练日志`,
+      '删除确认',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger'
+      }
+    )
+    
+    await deleteDataset(dataset.id)
+    ElMessage.success('数据集已删除')
+    fetchDatasets()
+  } catch (error: any) {
+    if (error !== 'cancel') {
+      ElMessage.error(error?.message || '删除失败')
+    }
   }
 }
 
@@ -123,6 +182,8 @@ const getStatusType = (status: string) => {
     case 'completed': return 'success'
     case 'training': return 'primary'
     case 'failed': return 'danger'
+    case 'paused': return 'info'
+    case 'pending': return 'warning'
     default: return 'info'
   }
 }
@@ -133,6 +194,7 @@ const getStatusText = (status: string) => {
     case 'training': return '训练中'
     case 'failed': return '失败'
     case 'pending': return '等待中'
+    case 'paused': return '已暂停'
     default: return status
   }
 }
