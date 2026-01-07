@@ -451,6 +451,138 @@ class VannaManager:
             return False
 
     @staticmethod
+    def get_training_data(dataset_id: int, page: int = 1, page_size: int = 20) -> dict:
+        """
+        从 ChromaDB collection 中获取训练数据（QA对、DDL、文档等）
+        支持分页查询
+        
+        Args:
+            dataset_id: 数据集ID
+            page: 页码（从1开始）
+            page_size: 每页数量
+            
+        Returns:
+            dict: {
+                'total': int,  # 总数
+                'items': [     # 训练数据列表
+                    {
+                        'id': str,
+                        'question': str,
+                        'sql': str,
+                        'training_data_type': str,  # 'sql', 'ddl', 'documentation'
+                        'created_at': str or None
+                    }
+                ],
+                'page': int,
+                'page_size': int
+            }
+        """
+        collection_name = f"vec_ds_{dataset_id}"
+        
+        try:
+            # 初始化 ChromaDB 客户端
+            import chromadb
+            if VannaManager._global_chroma_client is None:
+                VannaManager._global_chroma_client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
+            
+            chroma_client = VannaManager._global_chroma_client
+            
+            # 获取 collection
+            try:
+                collection = chroma_client.get_collection(name=collection_name)
+            except Exception as e:
+                if "does not exist" in str(e).lower():
+                    logger.info(f"Collection {collection_name} does not exist, returning empty result")
+                    return {
+                        'total': 0,
+                        'items': [],
+                        'page': page,
+                        'page_size': page_size
+                    }
+                raise
+            
+            # 获取所有数据（ChromaDB get()方法）
+            # ChromaDB的get()可以不带参数获取所有文档
+            result = collection.get(
+                include=['documents', 'metadatas']  # 包含文档内容和元数据
+            )
+            
+            # 解析返回的数据
+            ids = result.get('ids', [])
+            documents = result.get('documents', [])
+            metadatas = result.get('metadatas', [])
+            
+            # 构建训练数据列表
+            all_items = []
+            for i, doc_id in enumerate(ids):
+                document = documents[i] if i < len(documents) else ''
+                metadata = metadatas[i] if i < len(metadatas) else {}
+                
+                # 确定数据类型
+                training_data_type = 'sql'  # 默认类型
+                if 'training_data_type' in metadata:
+                    training_data_type = metadata['training_data_type']
+                elif 'CREATE TABLE' in document or 'CREATE VIEW' in document:
+                    training_data_type = 'ddl'
+                elif metadata.get('question') is None:
+                    training_data_type = 'documentation'
+                
+                # 提取 question 和 sql
+                question = metadata.get('question', '')
+                sql = document  # document 通常存储 SQL 或 DDL
+                
+                # 特殊处理：如果是通过 train(question=..., sql=...) 训练的
+                # metadata 会包含 question，document 包含 SQL
+                if not question and training_data_type == 'sql':
+                    # 尝试从 document 中提取（某些情况下 question 和 sql 都在 document 中）
+                    question = metadata.get('text', '')  # 备用字段
+                
+                # 如果是 DDL，使用表名作为 question
+                if training_data_type == 'ddl' and not question:
+                    # 尝试从 DDL 中提取表名
+                    import re
+                    table_match = re.search(r'CREATE TABLE\s+`?(\w+)`?', sql, re.IGNORECASE)
+                    if table_match:
+                        table_name = table_match.group(1)
+                        question = f"表结构: {table_name}"
+                    else:
+                        question = "数据库表结构定义"
+                
+                # 如果是文档类型
+                if training_data_type == 'documentation':
+                    question = "业务文档" if '业务' in sql else "数据库文档"
+                    # documentation 类型的 sql 字段存储文档内容
+                
+                all_items.append({
+                    'id': doc_id,
+                    'question': question,
+                    'sql': sql,
+                    'training_data_type': training_data_type,
+                    'created_at': metadata.get('created_at') or metadata.get('timestamp')
+                })
+            
+            # 计算分页
+            total = len(all_items)
+            start = (page - 1) * page_size
+            end = start + page_size
+            
+            # 获取当前页数据
+            items = all_items[start:end]
+            
+            logger.info(f"Retrieved {len(items)} training data items (page {page}/{(total + page_size - 1) // page_size}) for dataset {dataset_id}")
+            
+            return {
+                'total': total,
+                'items': items,
+                'page': page,
+                'page_size': page_size
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get training data for dataset {dataset_id}: {e}")
+            raise ValueError(f"获取训练数据失败: {str(e)}")
+
+    @staticmethod
     async def train_dataset_async(dataset_id: int, table_names: list[str], db_session: Session):
         """
         异步训练数据集，支持进度更新和中断控制
@@ -1749,9 +1881,23 @@ If no relationships found, return: []
 
 Your response (JSON array only):"""
             
-            # 3. Call LLM
-            vn = VannaManager.get_legacy_vanna(dataset_id)
-            llm_response = vn.submit_prompt(prompt)
+            # 3. Call LLM directly using OpenAI client to avoid ChromaDB conflicts
+            # Using direct API call instead of Vanna instance
+            client = OpenAIClient(
+                api_key=settings.DASHSCOPE_API_KEY,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+            )
+            
+            response = client.chat.completions.create(
+                model=settings.QWEN_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a database relationship analyzer. You analyze table structures and return JSON arrays."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1  # Lower temperature for more structured output
+            )
+            
+            llm_response = response.choices[0].message.content
             
             logger.info(f"LLM relationship analysis response: {llm_response}")
             

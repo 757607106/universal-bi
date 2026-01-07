@@ -79,6 +79,26 @@ export const deleteDataset = async (id: number) => {
   return await http.delete<{ message: string }, any>(`/datasets/${id}`)
 }
 
+// Training Data APIs
+export interface TrainingDataItem {
+  id: string
+  question: string
+  sql: string
+  training_data_type: 'sql' | 'ddl' | 'documentation'
+  created_at?: string | null
+}
+
+export interface TrainingDataResponse {
+  total: number
+  items: TrainingDataItem[]
+  page: number
+  page_size: number
+}
+
+export const getTrainingData = async (id: number, page: number = 1, page_size: number = 20) => {
+  return await http.get<TrainingDataResponse, any>(`/datasets/${id}/training/data?page=${page}&page_size=${page_size}`)
+}
+
 export const updateModelingConfig = async (id: number, config: any) => {
   return await http.put<{ message: string, modeling_config: any }, any>(`/datasets/${id}/modeling-config`, config)
 }

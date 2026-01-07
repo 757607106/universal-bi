@@ -96,3 +96,24 @@ class DatasetUpdateStatus(BaseModel):
 class DatasetUpdateModelingConfig(BaseModel):
     """Update dataset modeling config"""
     modeling_config: Dict
+
+
+# Training Data Schemas
+class TrainingDataItem(BaseModel):
+    """Single training data item (QA pair)"""
+    id: str
+    question: str
+    sql: str
+    training_data_type: str  # 数据类型: 'sql', 'ddl', 'documentation'
+    created_at: Optional[str] = None  # metadata中可能包含时间戳
+
+    class Config:
+        from_attributes = True
+
+
+class TrainingDataResponse(BaseModel):
+    """Training data response with pagination"""
+    total: int
+    items: List[TrainingDataItem]
+    page: int
+    page_size: int

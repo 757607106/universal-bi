@@ -53,16 +53,22 @@
           <div 
             v-for="table in filteredTables" 
             :key="table.name"
-            class="table-item bg-gray-50 dark:bg-slate-700/50 rounded-lg p-3 mb-2 cursor-move hover:shadow-md hover:bg-blue-50 dark:hover:bg-blue-500/10 border border-gray-200 dark:border-slate-600 transition-all"
+            :class="[
+              'table-item rounded-lg p-3 mb-2 cursor-move hover:shadow-md border transition-all',
+              isTableInCanvas(table.name) 
+                ? 'bg-blue-50 dark:bg-blue-500/10 border-blue-300 dark:border-blue-500/50 hover:bg-blue-100 dark:hover:bg-blue-500/20' 
+                : 'bg-gray-50 dark:bg-slate-700/50 border-gray-200 dark:border-slate-600 hover:bg-blue-50 dark:hover:bg-blue-500/10'
+            ]"
             draggable="true"
             @dragstart="handleDragStart($event, table)"
             @dblclick="handleAddTable(table)"
           >
             <div class="flex items-center gap-2">
-              <el-icon class="text-blue-500" :size="16"><Grid /></el-icon>
+              <el-icon :class="isTableInCanvas(table.name) ? 'text-blue-600 dark:text-blue-400' : 'text-blue-500'" :size="16"><Grid /></el-icon>
               <div class="flex-1 min-w-0">
                 <div class="text-xs font-medium text-gray-900 dark:text-slate-200 truncate">
                   {{ table.name }}
+                  <el-tag v-if="isTableInCanvas(table.name)" size="small" type="info" effect="plain" class="ml-1 !text-[10px] !h-4 !px-1">已添加</el-tag>
                 </div>
                 <div class="text-[10px] text-gray-500 dark:text-slate-400 mt-1">
                   {{ table.fields.length }} 个字段
@@ -146,6 +152,12 @@
                 </div>
               </div>
             </div>
+            
+            <!-- 【新增】删除节点按钮 -->
+            <el-button type="danger" size="small" @click="handleDeleteNode" class="w-full">
+              <el-icon><Delete /></el-icon>
+              <span class="ml-1">从画布移除</span>
+            </el-button>
           </div>
           
           <!-- 选中连线时显示关联详情 -->
@@ -426,20 +438,30 @@ const isLoadingTables = ref(false)
 
 // 从路由获取参数
 const initFromRoute = async () => {
-  // 尝试从路由获取 dataset_id 或 datasource_id
-  const datasetId = route.query.dataset_id as string
+  // 优先从路径参数获取 dataset_id，其次从查询参数获取
+  const datasetIdFromPath = route.params.id as string
+  const datasetIdFromQuery = route.query.dataset_id as string
   const datasourceId = route.query.datasource_id as string
+  
+  const datasetId = datasetIdFromPath || datasetIdFromQuery
+  
+  let selectedTableNames: string[] = []
   
   if (datasetId) {
     currentDatasetId.value = parseInt(datasetId)
     // 加载 dataset 信息，获取 datasource_id 和 modeling_config
-    await loadDatasetConfig()
+    selectedTableNames = await loadDatasetConfig() || []
   } else if (datasourceId) {
     currentDatasourceId.value = parseInt(datasourceId)
   }
   
-  // 加载表列表
-  await loadTables()
+  // 加载表列表（确保在 datasource_id 设置后执行）
+  // 【修复】传入选中的表名列表进行过滤
+  if (currentDatasourceId.value) {
+    await loadTables(selectedTableNames)
+  } else {
+    console.warn('No datasource_id available, skipping table loading')
+  }
 }
 
 // 加载数据集配置（包括建模数据）
@@ -460,8 +482,11 @@ const loadDatasetConfig = async () => {
       currentDataset.value = dataset.name
     }
     
-    // 恢复建模数据
-    if (dataset.modeling_config && Object.keys(dataset.modeling_config).length > 0) {
+    // 【修复】保存 schema_config，用于过滤表列表
+    const selectedTableNames = dataset.schema_config || []
+    
+    // 恢复建模数据（只有在 modeling_config 不为 null 且有内容时才加载）
+    if (dataset.modeling_config && typeof dataset.modeling_config === 'object' && Object.keys(dataset.modeling_config).length > 0) {
       console.log('Restoring modeling config:', dataset.modeling_config)
       
       // 使用 fromObject 恢复完整状态（包括 viewport）
@@ -512,14 +537,18 @@ const loadDatasetConfig = async () => {
         }
       }
     }
+    
+    // 【修复】返回选中的表名列表
+    return selectedTableNames
   } catch (error: any) {
     console.error('Failed to load dataset config:', error)
     // 不弹出错误提示，静默失败
+    return []
   }
 }
 
 // 加载数据源的表列表
-const loadTables = async () => {
+const loadTables = async (selectedTableNames?: string[]) => {
   if (!currentDatasourceId.value) {
     console.warn('No datasource_id available')
     return
@@ -528,14 +557,22 @@ const loadTables = async () => {
   isLoadingTables.value = true
   try {
     const tables = await getDbTables(currentDatasourceId.value)
-    availableTables.value = tables.map((t: any) => ({
+    let allTables = tables.map((t: any) => ({
       name: t.name,
       fields: t.columns?.map((col: any) => ({
         name: col.name,
         type: col.type
       })) || []
     }))
-    console.log('Loaded tables:', availableTables.value)
+    
+    // 【修复】如果有选中的表名列表，只显示这些表
+    if (selectedTableNames && selectedTableNames.length > 0) {
+      availableTables.value = allTables.filter(t => selectedTableNames.includes(t.name))
+      console.log('Filtered tables by schema_config:', availableTables.value)
+    } else {
+      availableTables.value = allTables
+      console.log('Loaded all tables:', availableTables.value)
+    }
   } catch (error) {
     console.error('Failed to load tables:', error)
     ElMessage.error('加载表列表失败')
@@ -815,6 +852,33 @@ const handleDeleteEdge = () => {
     // 自动更新 SQL 预览
     generateSQL()
   }
+}
+
+// 【新增】删除节点
+const handleDeleteNode = () => {
+  if (selectedNode.value) {
+    const tableName = selectedNode.value.data.tableName
+    // 先删除与该节点相关的所有连线
+    const relatedEdges = edges.value.filter(
+      e => e.source === selectedNode.value!.id || e.target === selectedNode.value!.id
+    )
+    if (relatedEdges.length > 0) {
+      removeEdges(relatedEdges.map(e => e.id))
+    }
+    
+    // 删除节点
+    removeNodes([selectedNode.value.id])
+    ElMessage.success(`已从画布移除 ${tableName}`)
+    selectedNode.value = null
+    
+    // 自动更新 SQL 预览
+    generateSQL()
+  }
+}
+
+// 【新增】检查表是否在画布中
+const isTableInCanvas = (tableName: string) => {
+  return nodes.value.some(n => n.data.tableName === tableName)
 }
 
 // 清空画布

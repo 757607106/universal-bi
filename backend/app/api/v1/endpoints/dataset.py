@@ -10,7 +10,7 @@ from app.schemas.dataset import (
     DatasetCreate, DatasetResponse, DatasetUpdateTables,
     BusinessTermCreate, BusinessTermResponse,
     AnalyzeRelationshipsRequest, AnalyzeRelationshipsResponse,
-    CreateViewRequest, TrainingLogResponse
+    CreateViewRequest, TrainingLogResponse, TrainingDataResponse
 )
 from app.services.vanna_manager import VannaManager
 
@@ -654,6 +654,41 @@ def get_training_logs(
     ).order_by(TrainingLog.created_at.desc()).limit(limit).all()
     
     return logs
+
+
+@router.get("/{id}/training/data", response_model=TrainingDataResponse)
+def get_training_data(
+    id: int,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    获取已训练的数据（QA对、DDL、文档）
+    应用数据隔离：需要验证 Dataset 的访问权
+    
+    Args:
+        id: 数据集 ID
+        page: 页码（从1开始）
+        page_size: 每页数量（默认20）
+    """
+    # 验证 dataset 访问权限
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    try:
+        # 调用 VannaManager 获取训练数据
+        result = VannaManager.get_training_data(id, page, page_size)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取训练数据失败: {str(e)}")
 
 
 @router.post("/{id}/training/pause")

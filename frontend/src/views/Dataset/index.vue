@@ -60,6 +60,10 @@
                 <el-icon class="mr-1"><MagicStick /></el-icon>
                 可视化建模
               </el-button>
+              <el-button size="small" @click="handleViewTrainingData(dataset)" class="!bg-green-50 dark:!bg-green-500/10 !border-green-200 dark:!border-green-500/50 !text-green-600 dark:!text-green-400 hover:!bg-green-100 dark:hover:!bg-green-500/20">
+                <el-icon class="mr-1"><Files /></el-icon>
+                训练数据
+              </el-button>
               <el-button v-if="(dataset.status || dataset.training_status) !== 'training'" size="small" @click="handleRetrain(dataset)" class="!bg-gray-100 dark:!bg-slate-700 hover:!bg-gray-200 dark:hover:!bg-slate-600 !border-gray-200 dark:!border-slate-600 !text-gray-700 dark:!text-slate-200">
                 重新训练
               </el-button>
@@ -88,6 +92,11 @@
         :dataset-id="selectedDatasetId"
         @refresh="fetchDatasets"
       />
+
+      <TrainingDataDialog
+        v-model="trainingDataDialogVisible"
+        :dataset-id="selectedDatasetId"
+      />
     </div>
   </div>
 </template>
@@ -100,10 +109,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { getDatasetList, trainDataset, deleteDataset, type Dataset } from '@/api/dataset'
 import DatasetWizard from './components/DatasetWizard.vue'
 import TrainingProgressDialog from './components/TrainingProgressDialog.vue'
+import TrainingDataDialog from './components/TrainingDataDialog.vue'
 
 const router = useRouter()
 const wizardVisible = ref(false)
 const progressDialogVisible = ref(false)
+const trainingDataDialogVisible = ref(false)
 const selectedDatasetId = ref(0)
 const datasetList = ref<Dataset[]>([])
 let pollingTimer: ReturnType<typeof setInterval> | null = null
@@ -120,9 +131,15 @@ const fetchDatasets = async () => {
 
 const checkPolling = (list: Dataset[]) => {
   const hasTraining = list.some(d => (d.status || d.training_status) === 'training' || (d.status || d.training_status) === 'pending')
+  
+  // 【修复】只有在有训练任务且轮询未开启时才启动
   if (hasTraining && !pollingTimer) {
+    console.log('检测到训练任务，开启轮询')
     pollingTimer = setInterval(fetchDatasets, 3000)
-  } else if (!hasTraining && pollingTimer) {
+  } 
+  // 【修复】没有训练任务且轮询开启时才关闭
+  else if (!hasTraining && pollingTimer) {
+    console.log('没有训练任务，关闭轮询')
     clearInterval(pollingTimer)
     pollingTimer = null
   }
@@ -146,6 +163,12 @@ const handleRetrain = async (dataset: Dataset) => {
 const handleShowProgress = (dataset: Dataset) => {
   selectedDatasetId.value = dataset.id
   progressDialogVisible.value = true
+}
+
+// 查看训练数据
+const handleViewTrainingData = (dataset: Dataset) => {
+  selectedDatasetId.value = dataset.id
+  trainingDataDialogVisible.value = true
 }
 
 const handleDelete = async (dataset: Dataset) => {
@@ -206,14 +229,7 @@ const formatDate = (dateStr: string | null) => {
 
 // 跳转到可视化建模页面
 const handleGoModeling = (dataset: any) => {
-  // 传递 datasource_id 到建模页面
-  router.push({
-    path: '/datasets/modeling',
-    query: {
-      dataset_id: dataset.id,
-      datasource_id: dataset.datasource_id
-    }
-  })
+  router.push(`/datasets/modeling/${dataset.id}`)
 }
 
 onMounted(() => {

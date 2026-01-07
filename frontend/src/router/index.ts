@@ -30,7 +30,7 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/Dataset/index.vue')
       },
       {
-        path: 'datasets/modeling',
+        path: 'datasets/modeling/:id',
         name: 'dataset-modeling',
         component: () => import('@/views/Dataset/modeling/index.vue'),
         meta: {
