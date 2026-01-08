@@ -1,513 +1,344 @@
 """
-波动归因分析服务
-
-提供三层分析能力：
-1. 统计分析：计算环比、同比、标准差、异常值检测
-2. AI智能解读：基于统计结果生成业务语言的归因分析
-3. 多维钻取：自动按其他维度拆解，找出波动贡献来源
+波动归因服务 - 智能分析数据波动并推理原因
 """
+from typing import Dict, Any, List, Optional
 import pandas as pd
 import numpy as np
-import json
-import re
-from typing import List, Dict, Any, Optional, Tuple
-from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, text
+from openai import OpenAI as OpenAIClient
 
+from app.core.config import settings
 from app.core.logger import get_logger
-from app.core.redis import get_redis_client
-from app.core.security import decrypt_password
-from app.models.metadata import Dataset
-from app.services.vanna import VannaInstanceManager
 
 logger = get_logger(__name__)
 
 
 class FluctuationAnalyzer:
-    """波动归因分析服务类"""
+    """波动归因分析器 - 检测数据波动并进行归因分析"""
     
-    # 缓存过期时间（秒）
-    CACHE_TTL = 1800  # 30分钟
+    # 波动阈值配置
+    SIGNIFICANT_CHANGE_THRESHOLD = 0.15  # 15% 变化认为是显著波动
+    OUTLIER_THRESHOLD = 2.5  # 2.5 倍标准差认为是异常值
     
-    # 异常检测阈值（标准差倍数）
-    ANOMALY_THRESHOLD = 1.5
-    
-    @staticmethod
-    def analyze(
-        dataset_id: int,
-        sql: str,
-        time_column: str,
-        value_column: str,
-        db_session: Session,
-        enable_drill_down: bool = True
-    ) -> Dict[str, Any]:
-        """
-        执行完整的波动归因分析
-        
-        Args:
-            dataset_id: 数据集ID
-            sql: 原始SQL查询
-            time_column: 时间维度列名
-            value_column: 指标值列名
-            db_session: 数据库会话
-            enable_drill_down: 是否启用多维钻取
-            
-        Returns:
-            Dict: 包含统计分析、AI解读和多维钻取的完整结果
-        """
-        logger.info(f"Starting fluctuation analysis for dataset {dataset_id}")
-        
-        # 尝试从缓存获取
-        cache_key = f"fluctuation:{dataset_id}:{hash(sql)}:{time_column}:{value_column}"
-        redis_client = get_redis_client()
-        
-        if redis_client:
-            try:
-                cached = redis_client.get(cache_key)
-                if cached:
-                    logger.info(f"Fluctuation analysis cache hit")
-                    return json.loads(cached)
-            except Exception as e:
-                logger.warning(f"Redis cache read failed: {e}")
-        
-        # 获取数据集和数据源
-        dataset = db_session.query(Dataset).filter(Dataset.id == dataset_id).first()
-        if not dataset or not dataset.datasource:
-            raise ValueError(f"Dataset {dataset_id} not found or no datasource")
-        
-        # 构建数据库连接
-        datasource = dataset.datasource
-        password = decrypt_password(datasource.password_encrypted)
-        db_url = f"{datasource.type}+pymysql://{datasource.username}:{password}@{datasource.host}:{datasource.port}/{datasource.database_name}?charset=utf8mb4"
-        engine = create_engine(db_url)
-        
-        # 执行SQL获取数据
-        try:
-            df = pd.read_sql(sql, engine)
-        except Exception as e:
-            logger.error(f"Failed to execute SQL: {e}")
-            raise ValueError(f"SQL执行失败: {str(e)}")
-        
-        if df.empty:
-            return {
-                "stats": None,
-                "ai_insight": "数据为空，无法进行波动分析",
-                "drill_down": None
-            }
-        
-        # 验证列是否存在
-        if time_column not in df.columns:
-            raise ValueError(f"时间列 '{time_column}' 不存在")
-        if value_column not in df.columns:
-            raise ValueError(f"指标列 '{value_column}' 不存在")
-        
-        # Layer 1: 统计分析
-        stats = FluctuationAnalyzer._compute_statistics(df, time_column, value_column)
-        
-        # Layer 2: AI智能解读
-        ai_insight = FluctuationAnalyzer._generate_ai_insight(
-            df=df,
-            time_column=time_column,
-            value_column=value_column,
-            stats=stats,
-            dataset_id=dataset_id
-        )
-        
-        # Layer 3: 多维钻取
-        drill_down = None
-        if enable_drill_down and stats.get('anomaly_points'):
-            try:
-                drill_down = FluctuationAnalyzer._perform_drill_down(
-                    df=df,
-                    sql=sql,
-                    time_column=time_column,
-                    value_column=value_column,
-                    anomaly_indices=stats['anomaly_points'],
-                    engine=engine
-                )
-            except Exception as e:
-                logger.error(f"Drill down analysis failed: {e}")
-        
-        result = {
-            "stats": stats,
-            "ai_insight": ai_insight,
-            "drill_down": drill_down
-        }
-        
-        # 缓存结果
-        if redis_client:
-            try:
-                redis_client.setex(
-                    cache_key,
-                    FluctuationAnalyzer.CACHE_TTL,
-                    json.dumps(result, ensure_ascii=False, default=str)
-                )
-            except Exception as e:
-                logger.warning(f"Redis cache write failed: {e}")
-        
-        return result
-    
-    @staticmethod
-    def _compute_statistics(
+    @classmethod
+    async def analyze_fluctuation(
+        cls,
         df: pd.DataFrame,
-        time_column: str,
-        value_column: str
-    ) -> Dict[str, Any]:
-        """
-        计算统计指标
-        
-        Args:
-            df: 数据DataFrame
-            time_column: 时间列名
-            value_column: 指标列名
-            
-        Returns:
-            Dict: 统计指标
-        """
-        # 确保数据按时间排序
-        df = df.sort_values(by=time_column).reset_index(drop=True)
-        
-        values = df[value_column].astype(float)
-        
-        # 基础统计
-        max_value = float(values.max())
-        min_value = float(values.min())
-        avg = float(values.mean())
-        std_dev = float(values.std())
-        median = float(values.median())
-        
-        # 环比增长率 (Month-over-Month)
-        mom_growth = []
-        if len(values) > 1:
-            for i in range(1, len(values)):
-                if values.iloc[i-1] != 0:
-                    growth = (values.iloc[i] - values.iloc[i-1]) / values.iloc[i-1]
-                    mom_growth.append(float(growth))
-                else:
-                    mom_growth.append(None)
-        
-        # 异常点检测（基于标准差）
-        anomaly_points = []
-        if std_dev > 0:
-            z_scores = np.abs((values - avg) / std_dev)
-            anomaly_indices = np.where(z_scores > FluctuationAnalyzer.ANOMALY_THRESHOLD)[0]
-            anomaly_points = [
-                {
-                    "index": int(idx),
-                    "time": str(df.iloc[idx][time_column]),
-                    "value": float(df.iloc[idx][value_column]),
-                    "z_score": float(z_scores.iloc[idx])
-                }
-                for idx in anomaly_indices
-            ]
-        
-        # 趋势判断（简单线性回归）
-        trend = "平稳"
-        if len(values) > 2:
-            x = np.arange(len(values))
-            coefficients = np.polyfit(x, values, 1)
-            slope = coefficients[0]
-            if slope > avg * 0.05:  # 上升超过5%
-                trend = "上升"
-            elif slope < -avg * 0.05:  # 下降超过5%
-                trend = "下降"
-        
-        # 波动幅度（变异系数）
-        cv = (std_dev / avg * 100) if avg != 0 else 0
-        
-        return {
-            "max_value": max_value,
-            "min_value": min_value,
-            "avg": avg,
-            "std_dev": std_dev,
-            "median": median,
-            "coefficient_of_variation": float(cv),
-            "trend": trend,
-            "mom_growth": mom_growth,
-            "anomaly_points": anomaly_points,
-            "data_points": len(values)
-        }
-    
-    @staticmethod
-    def _generate_ai_insight(
-        df: pd.DataFrame,
-        time_column: str,
-        value_column: str,
-        stats: Dict[str, Any],
+        question: str,
         dataset_id: int
-    ) -> str:
-        """
-        使用AI生成波动归因分析
-        
-        Args:
-            df: 数据DataFrame
-            time_column: 时间列名
-            value_column: 指标列名
-            stats: 统计指标
-            dataset_id: 数据集ID
-            
-        Returns:
-            str: AI生成的归因分析文本
-        """
-        # 构建数据摘要
-        data_summary = []
-        df_sorted = df.sort_values(by=time_column)
-        for idx, row in df_sorted.head(10).iterrows():
-            data_summary.append(f"{row[time_column]}: {row[value_column]}")
-        
-        if len(df) > 10:
-            data_summary.append(f"... (共{len(df)}个数据点)")
-        
-        data_summary_str = "\n".join(data_summary)
-        
-        # 构建Prompt
-        system_prompt = """你是一个数据分析师，擅长数据波动归因分析。
-基于提供的时间序列数据和统计指标，生成业务语言的归因分析报告。
-
-要求：
-1. 用业务语言描述，避免专业术语
-2. 重点指出异常波动及其可能原因
-3. 提供actionable的建议
-4. 控制在150字以内
-5. 直接输出分析内容，不要前缀如"分析："
-"""
-        
-        user_prompt = f"""数据序列：
-{data_summary_str}
-
-统计指标：
-- 平均值: {stats['avg']:.2f}
-- 标准差: {stats['std_dev']:.2f}
-- 最大值: {stats['max_value']:.2f}
-- 最小值: {stats['min_value']:.2f}
-- 趋势: {stats['trend']}
-- 变异系数: {stats['coefficient_of_variation']:.1f}%
-- 异常点数量: {len(stats['anomaly_points'])}
-
-请分析数据波动情况和可能的原因："""
-        
-        try:
-            vn = VannaInstanceManager.get_instance(dataset_id)
-            response = vn.submit_prompt(
-                prompt=user_prompt,
-                system_message=system_prompt
-            )
-            
-            # 清理响应（去除可能的前缀）
-            insight = response.strip()
-            insight = re.sub(r'^(分析[:：]|波动分析[:：]|归因分析[:：])\s*', '', insight)
-            
-            return insight
-            
-        except Exception as e:
-            logger.error(f"AI insight generation failed: {e}")
-            return FluctuationAnalyzer._generate_fallback_insight(stats)
-    
-    @staticmethod
-    def _generate_fallback_insight(stats: Dict[str, Any]) -> str:
-        """
-        生成兜底的分析文本
-        
-        Args:
-            stats: 统计指标
-            
-        Returns:
-            str: 兜底分析文本
-        """
-        trend_desc = {
-            "上升": "呈现上升趋势",
-            "下降": "呈现下降趋势",
-            "平稳": "整体较为平稳"
-        }
-        
-        insight_parts = []
-        
-        # 趋势描述
-        insight_parts.append(f"数据{trend_desc.get(stats['trend'], '波动较大')}")
-        
-        # 波动描述
-        if stats['coefficient_of_variation'] > 30:
-            insight_parts.append(f"波动幅度较大（变异系数{stats['coefficient_of_variation']:.1f}%）")
-        elif stats['coefficient_of_variation'] < 10:
-            insight_parts.append("波动幅度较小，数据较为稳定")
-        
-        # 异常点描述
-        if len(stats['anomaly_points']) > 0:
-            anomaly_times = [ap['time'] for ap in stats['anomaly_points'][:3]]
-            insight_parts.append(f"在{', '.join(anomaly_times)}等时间点出现异常波动")
-        
-        # 极值描述
-        value_range = stats['max_value'] - stats['min_value']
-        if value_range > stats['avg'] * 0.5:
-            insight_parts.append(f"最大值({stats['max_value']:.0f})与最小值({stats['min_value']:.0f})差距较大")
-        
-        return "，".join(insight_parts) + "。建议进一步分析异常时间点的具体原因。"
-    
-    @staticmethod
-    def _perform_drill_down(
-        df: pd.DataFrame,
-        sql: str,
-        time_column: str,
-        value_column: str,
-        anomaly_indices: List[Dict[str, Any]],
-        engine: Any
     ) -> Optional[Dict[str, Any]]:
         """
-        执行多维钻取分析
+        分析数据波动并进行归因
         
         Args:
-            df: 原始数据DataFrame
-            sql: 原始SQL
-            time_column: 时间列名
-            value_column: 指标列名
-            anomaly_indices: 异常点列表
-            engine: 数据库引擎
+            df: 查询结果 DataFrame
+            question: 用户问题
+            dataset_id: 数据集 ID
             
         Returns:
-            Dict: 钻取分析结果，如果无法钻取则返回None
+            Dict: {
+                "has_fluctuation": bool,
+                "fluctuation_points": [...],
+                "attribution": {
+                    "main_factors": [...],
+                    "detailed_analysis": "..."
+                },
+                "chart_recommendation": "waterfall"
+            }
         """
-        if not anomaly_indices:
-            return None
-        
-        # 尝试识别SQL中的GROUP BY维度
-        dimensions = FluctuationAnalyzer._extract_group_by_dimensions(sql, time_column)
-        
-        if not dimensions:
-            logger.info("No additional dimensions found for drill-down")
-            return None
-        
-        # 选择第一个异常点进行钻取
-        anomaly = anomaly_indices[0]
-        anomaly_time = anomaly['time']
-        
-        logger.info(f"Drilling down on anomaly at {anomaly_time}, dimension: {dimensions[0]}")
-        
-        # 构建钻取SQL
-        drill_sql = FluctuationAnalyzer._build_drill_down_sql(
-            sql=sql,
-            time_column=time_column,
-            value_column=value_column,
-            anomaly_time=anomaly_time,
-            dimension=dimensions[0]
-        )
-        
-        if not drill_sql:
+        if df is None or df.empty or len(df) < 3:
             return None
         
         try:
-            # 执行钻取查询
-            drill_df = pd.read_sql(drill_sql, engine)
+            # 对于大数据集，仅分析前 100 行
+            sample_df = df.head(100) if len(df) > 100 else df
             
-            if drill_df.empty:
-                return None
+            # 1. 检测波动点
+            fluctuations = cls._detect_fluctuations(sample_df)
             
-            # 计算各维度的贡献
-            total = drill_df[value_column].sum()
-            breakdown = []
+            if not fluctuations:
+                logger.info(
+                    "No significant fluctuation detected",
+                    dataset_id=dataset_id,
+                    row_count=len(df)
+                )
+                return {
+                    "has_fluctuation": False,
+                    "fluctuation_points": [],
+                    "attribution": None,
+                    "chart_recommendation": None
+                }
             
-            for _, row in drill_df.iterrows():
-                value = float(row[value_column])
-                contribution = (value / total * 100) if total != 0 else 0
-                breakdown.append({
-                    "dimension_value": str(row[dimensions[0]]),
-                    "value": value,
-                    "contribution_pct": float(contribution)
-                })
+            # 2. 进行归因分析
+            attribution = await cls._perform_attribution(
+                df=sample_df,
+                fluctuations=fluctuations,
+                question=question
+            )
             
-            # 按贡献度排序
-            breakdown.sort(key=lambda x: x['contribution_pct'], reverse=True)
+            # 3. 推荐图表类型
+            chart_recommendation = cls._recommend_chart(fluctuations, sample_df)
+            
+            logger.info(
+                "Fluctuation analysis completed",
+                dataset_id=dataset_id,
+                fluctuation_count=len(fluctuations),
+                has_attribution=attribution is not None
+            )
             
             return {
-                "dimension": dimensions[0],
-                "anomaly_time": anomaly_time,
-                "anomaly_value": anomaly['value'],
-                "breakdown": breakdown[:10]  # 最多返回前10个
+                "has_fluctuation": True,
+                "fluctuation_points": fluctuations,
+                "attribution": attribution,
+                "chart_recommendation": chart_recommendation
             }
             
         except Exception as e:
-            logger.error(f"Drill-down query failed: {e}")
+            logger.error(
+                "Fluctuation analysis failed",
+                error=str(e),
+                dataset_id=dataset_id,
+                exc_info=True
+            )
             return None
     
-    @staticmethod
-    def _extract_group_by_dimensions(sql: str, exclude_column: str) -> List[str]:
-        """
-        从SQL中提取GROUP BY的维度列
+    @classmethod
+    def _detect_fluctuations(cls, df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """检测数据波动点"""
+        fluctuations = []
         
-        Args:
-            sql: SQL查询
-            exclude_column: 要排除的列（通常是时间列）
-            
-        Returns:
-            List[str]: 维度列名列表
-        """
-        # 提取GROUP BY子句
-        group_by_match = re.search(
-            r'GROUP\s+BY\s+([^HAVING|ORDER|LIMIT|;]+)',
-            sql,
-            re.IGNORECASE
+        # 查找数值列
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        
+        if len(numeric_cols) == 0:
+            return fluctuations
+        
+        # 对每个数值列进行波动检测
+        for col in numeric_cols:
+            try:
+                values = df[col].dropna()
+                
+                if len(values) < 3:
+                    continue
+                
+                # 方法 1: 基于标准差的异常值检测
+                mean_val = values.mean()
+                std_val = values.std()
+                
+                if std_val == 0:
+                    continue
+                
+                outlier_mask = np.abs((values - mean_val) / std_val) > cls.OUTLIER_THRESHOLD
+                outlier_indices = values[outlier_mask].index.tolist()
+                
+                if outlier_indices:
+                    for idx in outlier_indices[:3]:  # 最多记录 3 个异常点
+                        fluctuations.append({
+                            "type": "outlier",
+                            "column": col,
+                            "index": int(idx),
+                            "value": float(df.loc[idx, col]),
+                            "mean": float(mean_val),
+                            "std": float(std_val),
+                            "deviation": float(abs(df.loc[idx, col] - mean_val) / std_val)
+                        })
+                
+                # 方法 2: 环比变化检测（如果有时间序列）
+                datetime_cols = df.select_dtypes(include=['datetime64']).columns
+                
+                if len(datetime_cols) > 0:
+                    time_col = datetime_cols[0]
+                    sorted_df = df.sort_values(time_col)
+                    sorted_values = sorted_df[col].dropna()
+                    
+                    if len(sorted_values) >= 2:
+                        # 计算环比变化率
+                        pct_changes = sorted_values.pct_change().dropna()
+                        
+                        significant_changes = pct_changes[
+                            np.abs(pct_changes) > cls.SIGNIFICANT_CHANGE_THRESHOLD
+                        ]
+                        
+                        for idx in significant_changes.index[:3]:  # 最多记录 3 个显著变化
+                            current_val = sorted_df.loc[idx, col]
+                            prev_idx = sorted_df.index[sorted_df.index.get_loc(idx) - 1]
+                            prev_val = sorted_df.loc[prev_idx, col]
+                            change_rate = pct_changes.loc[idx]
+                            
+                            fluctuations.append({
+                                "type": "significant_change",
+                                "column": col,
+                                "time_column": time_col,
+                                "index": int(idx),
+                                "current_value": float(current_val),
+                                "previous_value": float(prev_val),
+                                "change_rate": float(change_rate * 100),
+                                "direction": "增长" if change_rate > 0 else "下降"
+                            })
+                
+            except Exception as e:
+                logger.debug(f"Failed to detect fluctuations for column {col}: {e}")
+                continue
+        
+        # 按波动程度排序
+        fluctuations.sort(
+            key=lambda x: abs(x.get('deviation', 0)) + abs(x.get('change_rate', 0) / 100),
+            reverse=True
         )
         
-        if not group_by_match:
-            return []
-        
-        group_by_clause = group_by_match.group(1)
-        
-        # 分割列名
-        columns = [col.strip() for col in group_by_clause.split(',')]
-        
-        # 清理列名（去除表别名、函数调用等）
-        cleaned_columns = []
-        for col in columns:
-            # 去除表别名 (如 t.column_name -> column_name)
-            if '.' in col:
-                col = col.split('.')[-1]
-            
-            # 去除函数调用（如 DATE(column) -> column）
-            func_match = re.search(r'\w+\((.+?)\)', col)
-            if func_match:
-                col = func_match.group(1).strip()
-            
-            col = col.strip('`"\'')
-            
-            if col and col.lower() != exclude_column.lower():
-                cleaned_columns.append(col)
-        
-        return cleaned_columns
+        return fluctuations[:5]  # 最多返回 5 个波动点
     
-    @staticmethod
-    def _build_drill_down_sql(
-        sql: str,
-        time_column: str,
-        value_column: str,
-        anomaly_time: str,
-        dimension: str
-    ) -> Optional[str]:
-        """
-        构建钻取SQL
+    @classmethod
+    async def _perform_attribution(
+        cls,
+        df: pd.DataFrame,
+        fluctuations: List[Dict],
+        question: str
+    ) -> Optional[Dict[str, Any]]:
+        """执行归因分析（使用 LLM 推理）"""
+        if not fluctuations:
+            return None
         
-        Args:
-            sql: 原始SQL
-            time_column: 时间列名
-            value_column: 指标列名
-            anomaly_time: 异常时间点
-            dimension: 钻取维度
-            
-        Returns:
-            str: 钻取SQL，如果无法构建则返回None
-        """
         try:
-            # 简化策略：在原SQL基础上添加WHERE条件和修改GROUP BY
-            # 这里采用子查询方式更安全
-            drill_sql = f"""
-SELECT {dimension}, SUM({value_column}) as {value_column}
-FROM ({sql}) as base_query
-WHERE {time_column} = '{anomaly_time}'
-GROUP BY {dimension}
-ORDER BY {value_column} DESC
-LIMIT 20
-"""
-            return drill_sql.strip()
+            # 准备数据上下文
+            context = cls._prepare_attribution_context(df, fluctuations, question)
+            
+            # 调用 LLM 进行归因分析
+            attribution = await cls._generate_attribution_with_llm(context)
+            
+            return attribution
             
         except Exception as e:
-            logger.error(f"Failed to build drill-down SQL: {e}")
-            return None
+            logger.error(f"Attribution analysis failed: {e}", exc_info=True)
+            return cls._generate_fallback_attribution(fluctuations)
+    
+    @classmethod
+    def _prepare_attribution_context(
+        cls,
+        df: pd.DataFrame,
+        fluctuations: List[Dict],
+        question: str
+    ) -> str:
+        """准备归因分析的上下文信息"""
+        context = f"用户问题：{question}\n\n"
+        context += f"数据维度：{', '.join(df.columns.tolist())}\n"
+        context += f"数据规模：{len(df)} 行\n\n"
+        context += "检测到的波动：\n"
+        
+        for i, fluct in enumerate(fluctuations, 1):
+            if fluct['type'] == 'outlier':
+                context += f"{i}. {fluct['column']} 存在异常值：{fluct['value']:.2f}（偏离均值 {fluct['deviation']:.2f} 倍标准差）\n"
+            elif fluct['type'] == 'significant_change':
+                context += f"{i}. {fluct['column']} 出现显著{fluct['direction']}：变化率 {fluct['change_rate']:.1f}%\n"
+        
+        # 添加分类维度信息（用于多维度归因）
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        
+        if len(categorical_cols) > 0:
+            context += "\n可用于归因的维度：\n"
+            for col in categorical_cols[:3]:
+                unique_vals = df[col].nunique()
+                context += f"- {col}（{unique_vals} 个不同值）\n"
+        
+        return context
+    
+    @classmethod
+    async def _generate_attribution_with_llm(cls, context: str) -> Dict[str, Any]:
+        """使用 LLM 生成归因分析"""
+        try:
+            client = OpenAIClient(
+                api_key=settings.DASHSCOPE_API_KEY,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+            )
+            
+            system_prompt = """你是一个专业的数据分析师，擅长波动归因分析。
+
+任务：
+- 基于检测到的数据波动和可用维度，推理可能的波动原因
+- 提供 2-3 个主要归因因素
+- 给出 100-150 字的详细分析
+
+输出要求（JSON 格式）：
+{
+  "main_factors": ["因素1", "因素2", "因素3"],
+  "detailed_analysis": "详细的归因分析文本，解释波动原因和影响"
+}
+
+注意：
+- 基于数据特征进行合理推测，不要过度猜测
+- 如果有明显的时间、地区、类别维度，重点分析
+- 使用简洁、专业的语言
+"""
+
+            response = client.chat.completions.create(
+                model=settings.QWEN_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": context}
+                ],
+                temperature=0.4,
+                max_tokens=300,
+                response_format={"type": "json_object"}
+            )
+            
+            content = response.choices[0].message.content.strip()
+            
+            # 解析 JSON 响应
+            import json
+            attribution = json.loads(content)
+            
+            logger.debug("Attribution generated with LLM")
+            
+            return attribution
+            
+        except Exception as e:
+            logger.error(f"Failed to generate attribution with LLM: {e}", exc_info=True)
+            raise
+    
+    @classmethod
+    def _generate_fallback_attribution(cls, fluctuations: List[Dict]) -> Dict[str, Any]:
+        """生成降级归因（不使用 LLM）"""
+        main_factors = []
+        
+        # 基于波动类型生成简单归因
+        has_outlier = any(f['type'] == 'outlier' for f in fluctuations)
+        has_change = any(f['type'] == 'significant_change' for f in fluctuations)
+        
+        if has_outlier:
+            main_factors.append("数据存在异常值，可能由数据录入错误或特殊事件引起")
+        
+        if has_change:
+            change_fluct = next((f for f in fluctuations if f['type'] == 'significant_change'), None)
+            if change_fluct:
+                direction = change_fluct.get('direction', '变化')
+                main_factors.append(f"数据呈现{direction}趋势，可能受业务变化或季节因素影响")
+        
+        if not main_factors:
+            main_factors.append("数据波动可能由多种因素综合影响")
+        
+        detailed_analysis = "检测到数据存在显著波动。" + "；".join(main_factors) + "。建议进一步细分维度进行深入分析。"
+        
+        return {
+            "main_factors": main_factors[:3],
+            "detailed_analysis": detailed_analysis
+        }
+    
+    @classmethod
+    def _recommend_chart(cls, fluctuations: List[Dict], df: pd.DataFrame) -> str:
+        """推荐适合展示波动归因的图表类型"""
+        # 如果有时间序列变化，推荐折线图
+        has_time_change = any(
+            f['type'] == 'significant_change' and 'time_column' in f
+            for f in fluctuations
+        )
+        
+        if has_time_change:
+            return "line"  # 折线图适合展示趋势变化
+        
+        # 如果有分类维度，推荐柱状图或瀑布图
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        
+        if len(categorical_cols) > 0:
+            return "bar"  # 柱状图适合对比不同类别
+        
+        # 默认推荐柱状图
+        return "bar"

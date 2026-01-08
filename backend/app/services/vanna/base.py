@@ -41,6 +41,9 @@ class VannaLegacy(ChromaDB_VectorStore, OpenAI_Chat):
     def __init__(self, config=None, chroma_client=None):
         # 保存 config 引用，供父类方法使用
         self.config = config or {}
+        
+        # 启用 LLM 数据可见性，支持 intermediate_sql 推理
+        self.allow_llm_to_see_data = True
 
         # === VannaBase 需要的属性 ===
         self.run_sql_is_set = False
@@ -141,6 +144,9 @@ class VannaLegacyPGVector(OpenAI_Chat):
     def __init__(self, config=None):
         # 保存 config 引用
         self.config = config or {}
+        
+        # 启用 LLM 数据可见性，支持 intermediate_sql 推理
+        self.allow_llm_to_see_data = True
 
         # === VannaBase 需要的属性 ===
         self.run_sql_is_set = False

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import uuid
 
-from app.db.session import get_db, SessionLocal
+from app.db.session import get_db
 from app.api.deps import get_current_user, apply_ownership_filter
 from app.models.metadata import User, Dataset
 from app.models.data_table import Folder, DataTable, TableField
@@ -23,7 +23,6 @@ from app.schemas.data_table import (
     DataQueryRequest,
     DataQueryResponse
 )
-from app.schemas.dataset import DatasetResponse
 from app.services.file_etl import FileETLService
 from app.services.data_table_service import DataTableService
 from app.services.vanna import VannaTrainingService
@@ -31,15 +30,6 @@ from app.core.logger import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
-
-
-def _train_data_table_dataset(dataset_id: int, table_name: str):
-    """后台训练任务"""
-    db = SessionLocal()
-    try:
-        VannaTrainingService.train_dataset(dataset_id, [table_name], db)
-    finally:
-        db.close()
 
 
 # ============ 文件夹管理 API ============
@@ -201,6 +191,7 @@ async def preview_excel(
 
 @router.post("/", response_model=DataTableResponse)
 async def create_data_table(
+    background_tasks: BackgroundTasks,
     display_name: str = Form(...),
     creation_method: str = Form(...),
     datasource_id: Optional[int] = Form(None),
@@ -258,6 +249,39 @@ async def create_data_table(
                 user=current_user,
                 db_session=db
             )
+            
+            # ===== 新增：自动创建并训练数据集 =====
+            
+            # 1. 创建 Dataset 记录
+            collection_name = f"vanna_{uuid.uuid4().hex[:16]}"
+            dataset = Dataset(
+                name=f"{display_name}_数据集",
+                datasource_id=datasource_id,
+                collection_name=collection_name,
+                schema_config=[data_table.physical_table_name],  # 使用数据表的物理表名
+                status="pending",
+                owner_id=current_user.id
+            )
+            
+            db.add(dataset)
+            db.commit()
+            db.refresh(dataset)
+            
+            logger.info(
+                "Auto-created dataset for data table",
+                dataset_id=dataset.id,
+                data_table_id=data_table.id,
+                user_id=current_user.id
+            )
+            
+            # 2. 后台训练
+            background_tasks.add_task(
+                _train_dataset_for_data_table,
+                dataset_id=dataset.id,
+                table_names=[data_table.physical_table_name]
+            )
+            
+            # ===== 结束新增 =====
             
         elif creation_method == 'datasource_table':
             if not datasource_id:
@@ -471,79 +495,42 @@ def query_data(
         raise HTTPException(status_code=500, detail=f"查询数据失败: {str(e)}")
 
 
-@router.get("/{id}/dataset", response_model=DatasetResponse)
-def get_or_create_dataset(
-    id: int,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
+def _train_dataset_for_data_table(dataset_id: int, table_names: List[str]):
     """
-    为数据表获取或自动创建对应的Dataset，用于智能问答分析
+    后台任务：为数据表自动训练数据集
     
-    - 如果DataTable已关联Dataset，直接返回
-    - 如果未关联，自动创建新的Dataset并后台训练
+    Args:
+        dataset_id: 数据集ID
+        table_names: 表名列表
     """
+    from app.db.session import SessionLocal
+    
+    db = SessionLocal()
     try:
-        # 验证DataTable访问权限
-        data_table = db.query(DataTable).filter(
-            DataTable.id == id,
-            DataTable.owner_id == current_user.id
-        ).first()
-        
-        if not data_table:
-            raise HTTPException(status_code=404, detail="数据表不存在")
-        
-        # 查找是否已有关联的Dataset
-        # Dataset的schema_config包含物理表名
-        existing_dataset = db.query(Dataset).filter(
-            Dataset.datasource_id == data_table.datasource_id,
-            Dataset.owner_id == current_user.id
-        ).all()
-        
-        # 查找包含该表的Dataset
-        for ds in existing_dataset:
-            if ds.schema_config and data_table.physical_table_name in ds.schema_config:
-                logger.info(
-                    "Found existing dataset for data table",
-                    data_table_id=id,
-                    dataset_id=ds.id
-                )
-                return ds
-        
-        # 没有找到，创建新的Dataset
-        collection_name = f"vanna_{uuid.uuid4().hex[:16]}"
-        new_dataset = Dataset(
-            name=f"{data_table.display_name}",
-            datasource_id=data_table.datasource_id,
-            collection_name=collection_name,
-            schema_config=[data_table.physical_table_name],
-            status="pending",
-            owner_id=current_user.id
+        logger.info(
+            "Starting auto-training for data table dataset",
+            dataset_id=dataset_id,
+            tables=table_names
         )
         
-        db.add(new_dataset)
-        db.commit()
-        db.refresh(new_dataset)
+        # 调用训练服务
+        VannaTrainingService.train_dataset(
+            dataset_id=dataset_id,
+            table_names=table_names,
+            db_session=db
+        )
         
         logger.info(
-            "Created new dataset for data table",
-            data_table_id=id,
-            dataset_id=new_dataset.id,
-            table_name=data_table.physical_table_name
+            "Auto-training completed for data table dataset",
+            dataset_id=dataset_id
         )
         
-        # 后台触发训练
-        background_tasks.add_task(
-            _train_data_table_dataset,
-            dataset_id=new_dataset.id,
-            table_name=data_table.physical_table_name
-        )
-        
-        return new_dataset
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error("Failed to get or create dataset", table_id=id, error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=f"获取或创建Dataset失败: {str(e)}")
+        logger.error(
+            "Auto-training failed for data table dataset",
+            dataset_id=dataset_id,
+            error=str(e),
+            exc_info=True
+        )
+    finally:
+        db.close()

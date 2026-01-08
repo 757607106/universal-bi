@@ -54,7 +54,12 @@ class VannaInstanceManager:
         # Return cached instance if exists
         if collection_name in cls._legacy_instances:
             logger.debug(f"Reusing existing Vanna instance for collection {collection_name}")
-            return cls._legacy_instances[collection_name]
+            cached_instance = cls._legacy_instances[collection_name]
+            # 确保缓存的实例也启用了数据可见性
+            if not getattr(cached_instance, 'allow_llm_to_see_data', False):
+                cached_instance.allow_llm_to_see_data = True
+                logger.info(f"Enabled allow_llm_to_see_data for cached instance {collection_name}")
+            return cached_instance
 
         # Check which vector store to use
         vector_store_type = settings.VECTOR_STORE_TYPE.lower()

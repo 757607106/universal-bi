@@ -7,7 +7,16 @@
           <el-icon class="text-blue-600 dark:text-cyan-500"><ChatDotRound /></el-icon>
           ChatBI
         </h2>
+        
+        <!-- 数据源类型选择 -->
+        <el-radio-group v-model="sourceType" size="small" @change="handleSourceTypeChange">
+          <el-radio-button value="dataset">数据集</el-radio-button>
+          <el-radio-button value="datatable">数据表</el-radio-button>
+        </el-radio-group>
+        
+        <!-- 数据集选择器 -->
         <el-select
+          v-if="sourceType === 'dataset'"
           v-model="currentDatasetId"
           placeholder="请选择数据集"
           class="w-64"
@@ -21,10 +30,66 @@
             :value="item.id"
           />
         </el-select>
+        
+        <!-- 数据表选择器 -->
+        <el-select
+          v-else
+          v-model="currentDataTableId"
+          placeholder="请选择数据表"
+          class="w-64"
+          :loading="loadingDataTables"
+          :effect="'light'"
+          filterable
+          @change="handleDataTableChange"
+        >
+          <el-option
+            v-for="item in dataTables"
+            :key="item.id"
+            :label="item.display_name"
+            :value="item.id"
+          >
+            <span class="flex items-center justify-between w-full">
+              <span>{{ item.display_name }}</span>
+              <div class="flex gap-1">
+                <el-tag v-if="item.creation_method === 'excel_upload'" size="small" type="success">上传</el-tag>
+                <el-tag v-if="!hasMatchingDataset(item)" size="small" type="warning">无数据集</el-tag>
+              </div>
+            </span>
+          </el-option>
+        </el-select>
       </div>
       <el-button @click="clearMessages" plain size="small" class="!bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-700 !text-gray-600 dark:!text-slate-300 hover:!bg-gray-100 dark:hover:!bg-slate-700 !rounded-lg transition-colors">
         <el-icon class="mr-1"><Delete /></el-icon> 清空对话
       </el-button>
+    </div>
+
+    <!-- Warning Banner for Missing Dataset -->
+    <div 
+      v-if="sourceType === 'datatable' && currentDataTableId && dataTables.find(t => t.id === currentDataTableId) && !hasMatchingDataset(dataTables.find(t => t.id === currentDataTableId)!)"
+      class="bg-orange-50 dark:bg-orange-900/20 border-b border-orange-200 dark:border-orange-800/50 px-6 py-3 flex-shrink-0"
+    >
+      <div class="flex items-start gap-3 max-w-5xl mx-auto">
+        <el-icon class="text-orange-500 dark:text-orange-400 text-xl flex-shrink-0 mt-0.5"><Warning /></el-icon>
+        <div class="flex-1">
+          <p class="text-sm text-orange-800 dark:text-orange-300 font-medium">该数据表的数据集正在训练中或尚未创建</p>
+          <div class="text-xs text-orange-700 dark:text-orange-400 mt-1.5">
+            <p class="mb-1">可能原因：</p>
+            <ul class="list-disc ml-5 space-y-0.5">
+              <li>数据集正在后台训练中，请稍等 1-2 分钟后刷新页面</li>
+              <li>如果是旧数据表，请前往「数据集」页面手动创建并训练数据集</li>
+            </ul>
+          </div>
+        </div>
+        <el-button 
+          size="small" 
+          type="warning" 
+          plain
+          @click="router.push('/dataset')"
+          class="flex-shrink-0"
+        >
+          前往数据集
+        </el-button>
+      </div>
     </div>
 
     <!-- Chat Area -->
@@ -37,31 +102,6 @@
           </div>
           <h1 class="text-3xl font-bold text-gray-900 dark:text-slate-100 mb-3 transition-colors">ChatBI 智能分析助手</h1>
           <p class="text-gray-500 dark:text-slate-400 max-w-md mx-auto transition-colors">选择下方推荐指令或直接输入问题，开始探索您的数据价值。</p>
-        </div>
-        
-        <!-- 猜你想问 - Suggested Questions -->
-        <div v-if="suggestedQuestions.length > 0" class="w-full max-w-3xl mb-8">
-          <div class="text-center mb-4">
-            <h3 class="text-lg font-medium text-gray-700 dark:text-slate-300 flex items-center justify-center gap-2">
-              <el-icon class="text-cyan-500"><MagicStick /></el-icon>
-              为您推荐以下分析维度
-            </h3>
-          </div>
-          <el-space wrap :size="12" class="w-full justify-center">
-            <el-tag
-              v-for="(question, idx) in suggestedQuestions"
-              :key="idx"
-              size="large"
-              effect="plain"
-              class="cursor-pointer !px-5 !py-3 !text-sm !bg-white dark:!bg-slate-800/60 !border-gray-200 dark:!border-slate-600 !text-gray-700 dark:!text-slate-300 hover:!bg-gradient-to-r hover:!from-blue-50 hover:!to-cyan-50 dark:hover:!from-slate-700 dark:hover:!to-slate-600 hover:!border-blue-300 dark:hover:!border-cyan-500/50 hover:!text-blue-600 dark:hover:!text-cyan-400 !rounded-xl transition-all duration-300 hover:shadow-md hover:-translate-y-0.5"
-              @click="handleQuickAsk(question)"
-            >
-              <span class="flex items-center gap-2">
-                <el-icon><ChatLineRound /></el-icon>
-                {{ question }}
-              </span>
-            </el-tag>
-          </el-space>
         </div>
         
         <!-- Recommendation Cards -->
@@ -224,6 +264,47 @@
                 
                 <!-- Chart -->
                 <div v-if="msg.chartData && msg.chartData.columns && msg.chartData.rows && msg.chartData.rows.length > 0" class="space-y-2">
+                  <!-- 图表工具栏 -->
+                  <div class="flex items-center justify-between px-2 py-1">
+                    <!-- 图表类型切换 -->
+                    <div v-if="msg.alternativeCharts && msg.alternativeCharts.length > 0" class="flex items-center gap-2">
+                      <span class="text-xs text-gray-500 dark:text-slate-400">切换图表：</span>
+                      <el-button
+                        v-for="chartType in msg.alternativeCharts"
+                        :key="chartType"
+                        size="small"
+                        :type="msg.chartType === chartType ? 'primary' : 'default'"
+                        @click="handleChangeChartType(index, chartType)"
+                        class="!text-xs"
+                      >
+                        {{ getChartTypeName(chartType) }}
+                      </el-button>
+                    </div>
+                    <div v-else></div>
+                    
+                    <!-- 导出按钮 -->
+                    <div class="flex items-center gap-2">
+                      <el-dropdown @command="(cmd) => handleExport(msg, cmd)" trigger="click">
+                        <el-button size="small" class="!text-xs">
+                          <el-icon class="mr-1"><Download /></el-icon>
+                          导出数据
+                        </el-button>
+                        <template #dropdown>
+                          <el-dropdown-menu>
+                            <el-dropdown-item command="excel">
+                              <el-icon><Document /></el-icon>
+                              导出为 Excel
+                            </el-dropdown-item>
+                            <el-dropdown-item command="csv">
+                              <el-icon><Document /></el-icon>
+                              导出为 CSV
+                            </el-dropdown-item>
+                          </el-dropdown-menu>
+                        </template>
+                      </el-dropdown>
+                    </div>
+                  </div>
+                  
                   <div class="h-80 w-full bg-white dark:bg-slate-900 rounded-xl p-4 border border-gray-200 dark:border-slate-800 shadow-inner overflow-hidden">
                      <DynamicChart
                        :chart-type="msg.chartType || 'table'"
@@ -239,6 +320,76 @@
                     </div>
                     <div class="text-sm text-gray-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap">
                       {{ msg.insight }}
+                    </div>
+                  </div>
+                  
+                  <!-- Data Interpretation Section (数据解读) -->
+                  <div v-if="msg.dataInterpretation" class="bg-gradient-to-r from-purple-50/50 to-pink-50/50 dark:from-purple-900/20 dark:to-pink-900/20 rounded-xl p-4 border border-purple-200/50 dark:border-purple-700/50">
+                    <div class="flex items-center gap-2 text-purple-600 dark:text-purple-400 mb-3">
+                      <el-icon class="text-lg"><TrendCharts /></el-icon>
+                      <span class="text-xs font-semibold uppercase tracking-wide">数据解读</span>
+                    </div>
+                    <div class="space-y-2">
+                      <p class="text-sm text-gray-700 dark:text-slate-300 leading-relaxed">{{ msg.dataInterpretation.summary }}</p>
+                      <div v-if="msg.dataInterpretation.key_findings && msg.dataInterpretation.key_findings.length > 0">
+                        <p class="text-xs text-gray-500 dark:text-slate-400 font-medium mb-1">关键发现：</p>
+                        <ul class="space-y-1">
+                          <li v-for="(finding, idx) in msg.dataInterpretation.key_findings" :key="idx" class="text-sm text-gray-600 dark:text-slate-400 flex items-start gap-2">
+                            <span class="text-purple-500 dark:text-purple-400">•</span>
+                            <span>{{ finding }}</span>
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <!-- Fluctuation Analysis Section (波动归因) -->
+                  <div v-if="msg.fluctuationAnalysis && msg.fluctuationAnalysis.has_fluctuation" class="bg-gradient-to-r from-orange-50/50 to-red-50/50 dark:from-orange-900/20 dark:to-red-900/20 rounded-xl p-4 border border-orange-200/50 dark:border-orange-700/50">
+                    <div class="flex items-center gap-2 text-orange-600 dark:text-orange-400 mb-3">
+                      <el-icon class="text-lg"><Warning /></el-icon>
+                      <span class="text-xs font-semibold uppercase tracking-wide">波动归因分析</span>
+                    </div>
+                    <div class="space-y-2">
+                      <div v-if="msg.fluctuationAnalysis.attribution">
+                        <p class="text-sm text-gray-700 dark:text-slate-300 leading-relaxed mb-2">
+                          {{ msg.fluctuationAnalysis.attribution.detailed_analysis }}
+                        </p>
+                        <div v-if="msg.fluctuationAnalysis.attribution.main_factors && msg.fluctuationAnalysis.attribution.main_factors.length > 0">
+                          <p class="text-xs text-gray-500 dark:text-slate-400 font-medium mb-1">主要因素：</p>
+                          <div class="flex flex-wrap gap-2">
+                            <el-tag
+                              v-for="(factor, idx) in msg.fluctuationAnalysis.attribution.main_factors"
+                              :key="idx"
+                              type="warning"
+                              effect="plain"
+                              size="small"
+                            >
+                              {{ factor }}
+                            </el-tag>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <!-- Followup Questions Section (猜你想问) -->
+                  <div v-if="msg.followupQuestions && msg.followupQuestions.length > 0" class="bg-gradient-to-r from-green-50/50 to-teal-50/50 dark:from-green-900/20 dark:to-teal-900/20 rounded-xl p-4 border border-green-200/50 dark:border-green-700/50">
+                    <div class="flex items-center gap-2 text-green-600 dark:text-green-400 mb-3">
+                      <el-icon class="text-lg"><QuestionFilled /></el-icon>
+                      <span class="text-xs font-semibold uppercase tracking-wide">猜你想问</span>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                      <el-tag
+                        v-for="(question, idx) in msg.followupQuestions"
+                        :key="idx"
+                        type="success"
+                        effect="plain"
+                        size="default"
+                        class="cursor-pointer hover:!bg-green-100 dark:hover:!bg-green-900/30 transition-colors"
+                        @click="handleFollowupQuestionClick(question)"
+                      >
+                        {{ question }}
+                      </el-tag>
                     </div>
                   </div>
                   
@@ -315,22 +466,34 @@
     <!-- Input Area -->
     <div class="p-4 pb-8 bg-transparent flex-shrink-0 flex justify-center z-20">
       <div class="w-full max-w-4xl bg-white dark:bg-slate-800 rounded-full shadow-xl dark:shadow-black/50 border border-gray-300 dark:border-slate-700/50 p-2 pl-6 flex items-center gap-4 transition-all hover:border-blue-400 dark:hover:border-slate-600">
-        <el-input
+        <el-autocomplete
           v-model="inputMessage"
-          placeholder="请输入您的问题..."
+          :placeholder="inputPlaceholder"
           @keyup.enter="handleSend"
-          :disabled="!currentDatasetId || sending"
+          :disabled="!isDataSourceSelected || sending"
+          :fetch-suggestions="fetchInputSuggestions"
+          :debounce="300"
+          :trigger-on-focus="false"
           class="flex-1 custom-chat-input"
+          @select="handleSuggestionSelect"
+          popper-class="chat-suggestion-popper"
+          clearable
         >
           <template #prefix>
             <el-icon class="text-gray-400 dark:text-slate-400"><Search /></el-icon>
           </template>
-        </el-input>
+          <template #default="{ item }">
+            <div class="suggestion-item flex items-center gap-2 py-1">
+              <el-icon class="text-blue-500 dark:text-cyan-500"><QuestionFilled /></el-icon>
+              <span class="text-sm">{{ item.value }}</span>
+            </div>
+          </template>
+        </el-autocomplete>
         <el-button
           type="primary"
           @click="handleSend"
           :loading="sending"
-          :disabled="!currentDatasetId || !inputMessage.trim()"
+          :disabled="!isDataSourceSelected || !inputMessage.trim()"
           class="!rounded-full px-8 !bg-gradient-to-r !from-blue-600 !to-cyan-600 !border-none hover:!opacity-90 hover:!shadow-lg hover:!shadow-blue-500/20 dark:hover:!shadow-cyan-500/20 transition-all"
         >
           发送
@@ -418,7 +581,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick, onUnmounted } from 'vue'
+import { ref, onMounted, nextTick, onUnmounted, computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   ChatDotRound,
@@ -444,14 +608,17 @@ import {
   DataAnalysis,
   Lightning,
   Refresh,
-  MagicStick,
-  ChatLineRound
+  Download,
+  Document
 } from '@element-plus/icons-vue'
 import { getDatasetList, type Dataset } from '@/api/dataset'
-import { sendChat, submitFeedback, generateSummary } from '@/api/chat'
+import { sendChat, submitFeedback, generateSummary, exportToExcel, exportToCSV, type ConversationMessage, suggestInput } from '@/api/chat'
 import { getDashboards, createDashboard, addCardToDashboard, type Dashboard } from '@/api/dashboard'
+import { getDataTableList, type DataTable } from '@/api/dataTable'
 import DynamicChart from '@/components/Charts/DynamicChart.vue'
-import { getSuggestedQuestions } from '@/api/dataset'
+
+const route = useRoute()
+const router = useRouter()
 
 interface Message {
   type: 'user' | 'ai'
@@ -459,6 +626,7 @@ interface Message {
   sql?: string
   chartData?: { columns: string[] | null; rows: any[] | null }  // 允许 columns 和 rows 为 null
   chartType?: string
+  alternativeCharts?: string[]  // 备选图表类型
   loading?: boolean
   error?: boolean
   question?: string  // 保存用户问题
@@ -466,22 +634,50 @@ interface Message {
   steps?: string[]  // 执行步骤
   isSystemError?: boolean  // 区分系统错误和业务澄清
   feedbackGiven?: 'like' | 'dislike'  // 反馈状态
-  summary?: string  // AI 业务总结 (已废弃，保留兼容)
-  summaryLoading?: boolean  // 总结加载中 (已废弃，保留兼容)
-  summaryError?: boolean  // 总结加载失败 (已废弃，保留兼容)
   insight?: string  // 分析师 Agent 的业务洞察
   isCached?: boolean  // 是否从缓存读取
   regenerating?: boolean  // 是否正在重新生成
+  followupQuestions?: string[]  // 后续推荐问题
+  dataInterpretation?: any  // 数据解读
+  fluctuationAnalysis?: any  // 波动归因分析
 }
 
+const sourceType = ref<'dataset' | 'datatable'>('dataset')
 const currentDatasetId = ref<number | undefined>(undefined)
+const currentDataTableId = ref<number | undefined>(undefined)
 const datasets = ref<Dataset[]>([])
+const dataTables = ref<DataTable[]>([])
 const loadingDatasets = ref(false)
+const loadingDataTables = ref(false)
 const messages = ref<Message[]>([])
 const inputMessage = ref('')
 const sending = ref(false)
 const chatContainer = ref<HTMLElement | null>(null)
 const activeCollapse = ref<string[]>([])
+
+// 计算属性：是否已选择数据源
+const isDataSourceSelected = computed(() => {
+  if (sourceType.value === 'dataset') {
+    return !!currentDatasetId.value
+  } else {
+    return !!currentDataTableId.value
+  }
+})
+
+// 计算属性：输入框占位符
+const inputPlaceholder = computed(() => {
+  if (!isDataSourceSelected.value) {
+    return sourceType.value === 'dataset' ? '请先选择数据集...' : '请先选择数据表...'
+  }
+  
+  if (sourceType.value === 'dataset') {
+    const dataset = datasets.value.find(d => d.id === currentDatasetId.value)
+    return dataset ? `向 ${dataset.name} 提问...` : '请输入您的问题...'
+  } else {
+    const table = dataTables.value.find(t => t.id === currentDataTableId.value)
+    return table ? `查询表 ${table.display_name} 的数据...` : '请输入您的问题...'
+  }
+})
 
 // Recommendation Cards Data
 const recommendCards = [
@@ -541,25 +737,64 @@ const submittingFeedback = ref(false)
 const currentFeedbackMessage = ref<Message | null>(null)
 const currentFeedbackMessageIndex = ref<number>(-1)
 
-// Suggested Questions State
-const suggestedQuestions = ref<string[]>([])
-const loadingSuggestions = ref(false)
-
 onMounted(async () => {
   loadingDatasets.value = true
+  loadingDataTables.value = true
   try {
+    // 加载数据集
     const res = await getDatasetList()
-    // Filter only completed datasets (兼容旧字段 training_status 和新字段 status)
-    datasets.value = res.filter(d => (d.status || d.training_status) === 'completed')
-    if (datasets.value.length > 0) {
+    console.log('[Chat] All datasets from API:', res.map(d => ({ id: d.id, name: d.name, datasource_id: d.datasource_id, status: d.status })))
+    
+    datasets.value = res.filter(d => d.status === 'completed')
+    console.log('[Chat] Filtered completed datasets:', datasets.value.map(d => ({ id: d.id, name: d.name, datasource_id: d.datasource_id, status: d.status })))
+    
+    // 加载数据表
+    const tables = await getDataTableList()
+    dataTables.value = tables.filter(t => t.status === 'active')
+    console.log('[Chat] Loaded data tables:', dataTables.value.map(t => ({ id: t.id, name: t.display_name, datasource_id: t.datasource_id })))
+    
+    // 检查URL参数
+    const datasetIdFromQuery = route.query.dataset
+    if (datasetIdFromQuery) {
+      sourceType.value = 'dataset'
+      const datasetId = Number(datasetIdFromQuery)
+      
+      const allDatasets = await getDatasetList()
+      const targetDataset = allDatasets.find(d => d.id === datasetId)
+      
+      if (targetDataset) {
+        const status = targetDataset.status
+        if (status === 'completed') {
+          currentDatasetId.value = datasetId
+          ElMessage.success(`已选择数据集: ${targetDataset.name}`)
+        } else if (status === 'training') {
+          ElMessage.info({
+            message: `数据集 "${targetDataset.name}" 正在训练中，预计1-2分钟完成。训练完成后刷新页面即可使用。`,
+            duration: 5000
+          })
+          if (datasets.value.length > 0) {
+            currentDatasetId.value = datasets.value[0].id
+          }
+        } else {
+          ElMessage.warning(`数据集 "${targetDataset.name}" 训练失败或状态异常`)
+          if (datasets.value.length > 0) {
+            currentDatasetId.value = datasets.value[0].id
+          }
+        }
+      } else {
+        if (datasets.value.length > 0) {
+          currentDatasetId.value = datasets.value[0].id
+        }
+        ElMessage.warning('指定的数据集不存在，已选择默认数据集')
+      }
+    } else if (datasets.value.length > 0) {
       currentDatasetId.value = datasets.value[0].id
-      // Load suggested questions for the first dataset
-      await loadSuggestedQuestions(currentDatasetId.value)
     }
   } catch (error) {
-    ElMessage.error('Failed to load datasets')
+    ElMessage.error('Failed to load data sources')
   } finally {
     loadingDatasets.value = false
+    loadingDataTables.value = false
   }
 })
 
@@ -575,15 +810,6 @@ const handleCardClick = (card: typeof recommendCards[0]) => {
     return
   }
   inputMessage.value = card.query
-  handleSend()
-}
-
-const handleQuickAsk = (question: string) => {
-  if (!currentDatasetId.value) {
-    ElMessage.warning('请先选择一个数据集')
-    return
-  }
-  inputMessage.value = question
   handleSend()
 }
 
@@ -615,29 +841,18 @@ const scrollToBottom = async () => {
   }
 }
 
-const loadSuggestedQuestions = async (datasetId: number) => {
-  if (!datasetId) return
-  
-  loadingSuggestions.value = true
-  try {
-    const questions = await getSuggestedQuestions(datasetId, 5)
-    suggestedQuestions.value = questions
-  } catch (error) {
-    console.error('Failed to load suggested questions:', error)
-    // 失败时不显示错误，静默失败
-    suggestedQuestions.value = []
-  } finally {
-    loadingSuggestions.value = false
-  }
-}
-
 const clearMessages = () => {
   messages.value = []
 }
 
 const handleSend = async () => {
-  if (!currentDatasetId.value) {
+  // 验证数据源选择
+  if (sourceType.value === 'dataset' && !currentDatasetId.value) {
     ElMessage.warning('请先选择一个数据集')
+    return
+  }
+  if (sourceType.value === 'datatable' && !currentDataTableId.value) {
+    ElMessage.warning('请先选择一个数据表')
     return
   }
   
@@ -657,10 +872,91 @@ const handleSend = async () => {
   scrollToBottom()
 
   try {
-    // 3. Call API
+    // 3. 构建对话历史（最近3轮，排除当前正在发送的消息）
+    const conversationHistory: ConversationMessage[] = []
+    // 排除最后两条消息（当前用户消息和 AI loading 占位符）
+    const historicalMessages = messages.value.slice(0, -2)
+    // 取最近6条历史消息（3轮对话）
+    const recentMessages = historicalMessages.slice(-6)
+
+    for (const msg of recentMessages) {
+      // 只包含有实际内容的消息，排除 loading 和 error 状态
+      if (msg.type === 'user' && msg.content && !msg.loading) {
+        conversationHistory.push({
+          role: 'user',
+          content: msg.content
+        })
+      } else if (msg.type === 'ai' && msg.content && !msg.loading && !msg.error) {
+        conversationHistory.push({
+          role: 'assistant',
+          content: msg.content
+        })
+      }
+    }
+    
+    // 4. Call API with conversation history
+    // 如果选择的是数据表，需要获取对应的数据集ID
+    let datasetId = currentDatasetId.value
+    let dataTableId = undefined
+    
+    if (sourceType.value === 'datatable' && currentDataTableId.value) {
+      const selectedTable = dataTables.value.find(t => t.id === currentDataTableId.value)
+      if (selectedTable) {
+        console.log('[Chat] Selected table:', selectedTable.display_name, 'datasource_id:', selectedTable.datasource_id)
+        console.log('[Chat] Available datasets:', datasets.value.map(d => ({ 
+          id: d.id, 
+          name: d.name, 
+          datasource_id: d.datasource_id, 
+          status: d.status 
+        })))
+        
+        // 查找使用相同数据源的已训练数据集
+        const matchingDataset = datasets.value.find(d => {
+          const isMatching = d.datasource_id !== null && 
+                            d.datasource_id === selectedTable.datasource_id && 
+                            d.status === 'completed'
+          console.log(`[Chat] Checking dataset "${d.name}" (datasource_id: ${d.datasource_id}, status: ${d.status}) - Match: ${isMatching}`)
+          return isMatching
+        })
+        
+        console.log('[Chat] Matching dataset:', matchingDataset)
+        
+        if (!matchingDataset) {
+          // 检查是否存在该数据源的数据集但状态不是 completed
+          const allDatasets = await getDatasetList()
+          const incompleteDataset = allDatasets.find(d => d.datasource_id === selectedTable.datasource_id)
+          
+          let errorMsg = ''
+          if (incompleteDataset) {
+            if (incompleteDataset.status === 'training') {
+              errorMsg = `该数据表所属的数据源的数据集"${incompleteDataset.name}"正在训练中，请等待训练完成后再使用。`
+            } else if (incompleteDataset.status === 'failed') {
+              errorMsg = `该数据表所属的数据源的数据集"${incompleteDataset.name}"训练失败，请前往"数据集"页面重新训练。`
+            } else if (incompleteDataset.status === 'pending') {
+              errorMsg = `该数据表所属的数据源的数据集"${incompleteDataset.name}"尚未开始训练，请前往"数据集"页面点击"训练"按钮。`
+            } else {
+              errorMsg = `该数据表所属的数据源的数据集"${incompleteDataset.name}"状态异常（${incompleteDataset.status}），请检查数据集配置。`
+            }
+          } else {
+            errorMsg = `该数据表所属的数据源（ID: ${selectedTable.datasource_id}）没有对应的数据集。\n\n请前往"数据集"页面，创建并训练该数据源的数据集。`
+          }
+          
+          ElMessage.error(errorMsg)
+          throw new Error('No trained dataset found for this data table')
+        }
+        
+        datasetId = matchingDataset.id
+        dataTableId = currentDataTableId.value
+        
+        console.log('[Chat] ✓ Using dataset', matchingDataset.name, '(ID:', matchingDataset.id, ') for table', selectedTable.display_name)
+      }
+    }
+    
     const res = await sendChat({
-      dataset_id: currentDatasetId.value,
-      question: question
+      dataset_id: datasetId!,
+      question: question,
+      conversation_history: conversationHistory.length > 0 ? conversationHistory : undefined,
+      data_table_id: dataTableId
     })
 
     // 4. Update AI Message (保存问题和数据集ID)
@@ -688,27 +984,49 @@ const handleSend = async () => {
       sql: res.sql || undefined,
       chartData: chartData,
       chartType: res.chart_type,
+      alternativeCharts: res.alternative_charts || [],  // 备选图表类型
       question: question,
-      datasetId: currentDatasetId.value,
+      datasetId: sourceType.value === 'dataset' ? currentDatasetId.value : datasetId,
       steps: res.steps,
       error: false,
       isSystemError: false,
       insight: res.insight,  // 直接使用后端同步返回的分析
-      isCached: res.is_cached || res.from_cache || false  // 缓存标识
+      isCached: res.is_cached || res.from_cache || false,  // 缓存标识
+      followupQuestions: res.followup_questions || [],  // 后续推荐问题
+      dataInterpretation: res.data_interpretation,  // 数据解读
+      fluctuationAnalysis: res.fluctuation_analysis  // 波动归因分析
     }
   } catch (error: any) {
     console.error(error)
     
-    // 区分 HTTP 错误类型
-    const statusCode = error.response?.status
-    const isServerError = statusCode && statusCode >= 500
-    
-    messages.value[aiMsgIndex] = {
-      type: 'ai',
-      loading: false,
-      error: true,
-      isSystemError: isServerError,
-      content: error.response?.data?.detail || '抱歉，处理您的问题时出现了错误。请稍后重试。'
+    // 如果是数据集不存在的错误，给出更友好的提示
+    if (error.message && error.message.includes('No trained dataset')) {
+      messages.value[aiMsgIndex] = {
+        type: 'ai',
+        loading: false,
+        error: true,
+        isSystemError: false,
+        content: '该数据表所属的数据源没有已训练的数据集。\n\n请前往"数据集"页面，选择对应的数据源创建并训练数据集后再使用。'
+      }
+    } else {
+      // 区分 HTTP 错误类型
+      const statusCode = error.response?.status
+      const isServerError = statusCode && statusCode >= 500
+      
+      let errorMessage = error.response?.data?.detail || '抱歉，处理您的问题时出现了错误。请稍后重试。'
+      
+      // 如果是 404 错误，可能是数据集不存在
+      if (statusCode === 404 && errorMessage.includes('Dataset')) {
+        errorMessage = '数据集不存在或无权访问。\n\n如果您选择的是数据表模式，请确保对应数据源已创建并训练了数据集。'
+      }
+      
+      messages.value[aiMsgIndex] = {
+        type: 'ai',
+        loading: false,
+        error: true,
+        isSystemError: isServerError,
+        content: errorMessage
+      }
     }
   } finally {
     stopLoadingAnimation()  // 停止加载动画
@@ -935,8 +1253,13 @@ const getClarificationSuggestions = (content: string): string[] => {
 }
 
 const handleQuickReply = (suggestion: string) => {
-  if (!currentDatasetId.value) {
+  // 检查是否已选择数据源（支持数据集和数据表两种模式）
+  if (sourceType.value === 'dataset' && !currentDatasetId.value) {
     ElMessage.warning('请先选择一个数据集')
+    return
+  }
+  if (sourceType.value === 'datatable' && !currentDataTableId.value) {
+    ElMessage.warning('请先选择一个数据表')
     return
   }
   
@@ -984,6 +1307,72 @@ const formatSingleResult = (chartData: { columns: string[] | null; rows: any[] |
   })
   
   return parts.join(' | ')
+}
+
+// 图表类型切换
+const handleChangeChartType = (msgIndex: number, newChartType: string) => {
+  if (messages.value[msgIndex]) {
+    messages.value[msgIndex].chartType = newChartType
+  }
+}
+
+// 图表类型名称映射
+const getChartTypeName = (chartType: string): string => {
+  const nameMap: Record<string, string> = {
+    'line': '折线图',
+    'bar': '柱状图',
+    'pie': '饼图',
+    'table': '表格',
+    'scatter': '散点图',
+    'area': '面积图'
+  }
+  return nameMap[chartType] || chartType
+}
+
+// 导出数据
+const handleExport = async (msg: Message, format: string) => {
+  if (!msg.chartData || !msg.chartData.columns || !msg.chartData.rows || !msg.datasetId) {
+    ElMessage.warning('无可导出的数据')
+    return
+  }
+  
+  try {
+    const exportData = {
+      dataset_id: msg.datasetId,
+      question: msg.question || '查询结果',
+      columns: msg.chartData.columns,
+      rows: msg.chartData.rows
+    }
+    
+    let blob: Blob
+    let filename: string
+    
+    if (format === 'excel') {
+      ElMessage.info('正在生成 Excel 文件...')
+      blob = await exportToExcel(exportData)
+      filename = `${msg.question?.slice(0, 20) || '查询结果'}_${new Date().getTime()}.xlsx`
+    } else if (format === 'csv') {
+      ElMessage.info('正在生成 CSV 文件...')
+      blob = await exportToCSV(exportData)
+      filename = `${msg.question?.slice(0, 20) || '查询结果'}_${new Date().getTime()}.csv`
+    } else {
+      ElMessage.error('不支持的导出格式')
+      return
+    }
+    
+    // 创建下载链接
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    link.click()
+    window.URL.revokeObjectURL(url)
+    
+    ElMessage.success('导出成功！')
+  } catch (error: any) {
+    console.error('Export failed:', error)
+    ElMessage.error(error.response?.data?.detail || '导出失败，请重试')
+  }
 }
 
 // Feedback Handlers
@@ -1076,21 +1465,43 @@ const handleSubmitCorrection = async () => {
 }
 
 // 重新生成处理
- const handleRegenerate = async (msg: Message, index: number) => {
+const handleRegenerate = async (msg: Message, index: number) => {
   if (!msg.question || !msg.datasetId) {
     ElMessage.warning('无法重新生成，缺少必要信息')
     return
   }
-  
+
   // 设置重新生成状态
   messages.value[index].regenerating = true
-  
+
   try {
+    // 构建对话历史（获取该消息之前的历史）
+    const conversationHistory: ConversationMessage[] = []
+    // 获取该消息之前的所有消息（不包括当前消息及其对应的用户问题）
+    const historicalMessages = messages.value.slice(0, index - 1)
+    // 取最近6条历史消息（3轮对话）
+    const recentMessages = historicalMessages.slice(-6)
+
+    for (const histMsg of recentMessages) {
+      if (histMsg.type === 'user' && histMsg.content && !histMsg.loading) {
+        conversationHistory.push({
+          role: 'user',
+          content: histMsg.content
+        })
+      } else if (histMsg.type === 'ai' && histMsg.content && !histMsg.loading && !histMsg.error) {
+        conversationHistory.push({
+          role: 'assistant',
+          content: histMsg.content
+        })
+      }
+    }
+
     // 调用 API，设置 use_cache = false 强制刷新
     const res = await sendChat({
       dataset_id: msg.datasetId,
       question: msg.question,
-      use_cache: false  // 关键：禁用缓存
+      use_cache: false,  // 关键：禁用缓存
+      conversation_history: conversationHistory.length > 0 ? conversationHistory : undefined
     })
     
     const isClarification = res.chart_type === 'clarification'
@@ -1115,7 +1526,10 @@ const handleSubmitCorrection = async () => {
       isSystemError: false,
       insight: res.insight,
       isCached: false,  // 重新生成的不会是缓存结果
-      regenerating: false
+      regenerating: false,
+      followupQuestions: res.followup_questions,
+      dataInterpretation: res.data_interpretation,
+      fluctuationAnalysis: res.fluctuation_analysis
     }
     
     ElMessage.success('已重新生成')
@@ -1125,6 +1539,136 @@ const handleSubmitCorrection = async () => {
     ElMessage.error('重新生成失败')
     messages.value[index].regenerating = false
   }
+}
+
+// ========== 输入联想相关函数 ==========
+
+/**
+ * 输入联想 - 获取问题建议
+ */
+const fetchInputSuggestions = async (queryString: string, callback: (suggestions: any[]) => void) => {
+  console.log('[Input Suggest] Triggered with:', queryString, 'sourceType:', sourceType.value, 'datasetId:', currentDatasetId.value)
+  
+  // 数据表模式暂不支持输入联想（因为需要 dataset_id）
+  if (sourceType.value === 'datatable') {
+    console.log('[Input Suggest] Skipped: datatable mode')
+    callback([])
+    return
+  }
+  
+  if (!currentDatasetId.value) {
+    console.log('[Input Suggest] Skipped: no dataset selected')
+    callback([])
+    return
+  }
+  
+  if (!queryString || queryString.trim().length < 2) {
+    console.log('[Input Suggest] Skipped: query too short')
+    callback([])
+    return
+  }
+
+  try {
+    console.log('[Input Suggest] Calling API with dataset_id:', currentDatasetId.value, 'partial_input:', queryString.trim())
+    const res = await suggestInput({
+      dataset_id: currentDatasetId.value,
+      partial_input: queryString.trim(),
+      limit: 5
+    })
+    
+    console.log('[Input Suggest] API Response:', res)
+    
+    // 转换为 el-autocomplete 需要的格式
+    const suggestions = res.suggestions.map(s => ({ value: s }))
+    console.log('[Input Suggest] Formatted suggestions:', suggestions)
+    
+    // 如果有建议，显示提示
+    if (suggestions.length > 0) {
+      console.log('[Input Suggest] ✓ Returning', suggestions.length, 'suggestions')
+    } else {
+      console.log('[Input Suggest] ⚠ No suggestions returned from API')
+    }
+    
+    callback(suggestions)
+  } catch (error: any) {
+    console.error('[Input Suggest] Error:', error)
+    console.error('[Input Suggest] Error details:', error.response?.data || error.message)
+    callback([])
+  }
+}
+
+/**
+ * 处理联想建议选择
+ */
+const handleSuggestionSelect = (item: any) => {
+  inputMessage.value = item.value
+  // 不自动发送，让用户确认
+}
+
+/**
+ * 处理后续问题点击
+ */
+const handleFollowupQuestionClick = (question: string) => {
+  if (sourceType.value === 'dataset' && !currentDatasetId.value) {
+    ElMessage.warning('请先选择一个数据集')
+    return
+  }
+  if (sourceType.value === 'datatable' && !currentDataTableId.value) {
+    ElMessage.warning('请先选择一个数据表')
+    return
+  }
+  inputMessage.value = question
+  handleSend()
+}
+
+/**
+ * 切换数据源类型
+ */
+const handleSourceTypeChange = () => {
+  // 清空当前选择和对话历史
+  currentDatasetId.value = undefined
+  currentDataTableId.value = undefined
+  messages.value = []
+  
+  // 自动选择第一个可用项
+  if (sourceType.value === 'dataset' && datasets.value.length > 0) {
+    currentDatasetId.value = datasets.value[0].id
+  } else if (sourceType.value === 'datatable' && dataTables.value.length > 0) {
+    // 选择第一个有对应数据集的数据表
+    const firstValidTable = dataTables.value.find(t => hasMatchingDataset(t))
+    if (firstValidTable) {
+      currentDataTableId.value = firstValidTable.id
+    } else if (dataTables.value.length > 0) {
+      // 如果没有有效的，还是选第一个，但会在发送时提示
+      currentDataTableId.value = dataTables.value[0].id
+    }
+  }
+}
+
+/**
+ * 检查数据表是否有对应的已训练数据集
+ */
+const hasMatchingDataset = (table: DataTable): boolean => {
+  return datasets.value.some(d => 
+    d.datasource_id !== null && 
+    d.datasource_id === table.datasource_id && 
+    d.status === 'completed'
+  )
+}
+
+/**
+ * 处理数据表切换
+ */
+const handleDataTableChange = (tableId: number) => {
+  const selectedTable = dataTables.value.find(t => t.id === tableId)
+  if (selectedTable && !hasMatchingDataset(selectedTable)) {
+    ElMessage.warning({
+      message: `该数据表所属的数据源没有已训练的数据集，查询可能失败。请先在"数据集"页面创建并训练数据集。`,
+      duration: 5000
+    })
+  }
+  // 清空对话历史
+  messages.value = []
 }
 </script>
 
@@ -1180,5 +1724,39 @@ const handleSubmitCorrection = async () => {
 
 .custom-dialog :deep(.el-dialog__body) {
   color: #cbd5e1;
+}
+
+/* Autocomplete Suggestion Popper */
+.chat-suggestion-popper {
+  z-index: 9999 !important;
+}
+
+.suggestion-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.suggestion-item:hover {
+  background-color: #f0f9ff;
+}
+</style>
+
+<style>
+/* Global styles for autocomplete popper (需要非 scoped) */
+.chat-suggestion-popper.el-popper {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  max-width: 600px;
+}
+
+.chat-suggestion-popper .el-autocomplete-suggestion__list {
+  padding: 4px;
+}
+
+.chat-suggestion-popper .el-autocomplete-suggestion__wrap {
+  max-height: 300px;
 }
 </style>

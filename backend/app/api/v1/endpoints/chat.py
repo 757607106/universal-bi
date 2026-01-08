@@ -8,16 +8,16 @@ import uuid
 from app.db.session import get_db
 from app.api.deps import get_current_user, apply_ownership_filter
 from app.models.metadata import User, Dataset
-from app.schemas.chat import ChatRequest, ChatResponse, FeedbackRequest, FeedbackResponse, SummaryRequest, SummaryResponse
-from app.schemas.suggestions import (
-    InputSuggestionRequest, SuggestionResponse, NextQuestionRequest,
-    FluctuationAnalysisRequest, FluctuationAnalysisResponse
+from app.schemas.chat import (
+    ChatRequest, ChatResponse, FeedbackRequest, FeedbackResponse, 
+    SummaryRequest, SummaryResponse, InputSuggestRequest, InputSuggestResponse,
+    FollowupSuggestRequest, FollowupSuggestResponse, ExportRequest
 )
 from app.services.vanna import VannaSqlGenerator, VannaAnalystService, VannaTrainingService
 from app.services.vanna_manager import VannaAgentManager
 from app.services.data_exporter import DataExporter
-from app.services.question_suggester import QuestionSuggester
-from app.services.fluctuation_analyzer import FluctuationAnalyzer
+from app.services.input_suggester import InputSuggester
+from app.services.enhanced_exporter import EnhancedExporter
 from app.core.logger import get_logger
 from app.core.config import settings
 
@@ -63,7 +63,8 @@ async def chat(
             question=request.question,
             db_session=db,
             use_cache=request.use_cache,  # 传递缓存控制参数
-            conversation_history=request.conversation_history  # 传递对话历史
+            conversation_history=request.conversation_history,  # 传递对话历史
+            data_table_id=request.data_table_id  # 传递数据表ID
         )
         
         logger.info(
@@ -586,264 +587,227 @@ async def export_to_csv(
 
 
 # =============================================================================
-# 问题推荐 API (Suggestions)
+# 输入联想 API 端点
 # =============================================================================
 
-@router.post("/suggestions/input", response_model=SuggestionResponse)
-async def get_input_suggestions(
-    request: InputSuggestionRequest,
+@router.post("/suggest-input", response_model=InputSuggestResponse)
+async def suggest_input(
+    request: InputSuggestRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    输入联想：基于用户输入的关键词，AI生成相关问题
+    输入联想 - 基于部分输入实时推荐相关问题
+    
+    功能特点：
+    - 基于用户输入关键词和数据集 schema 生成问题建议
+    - 使用 Redis 缓存（5 分钟 TTL）提高响应速度
+    - 降级策略：LLM 失败时返回默认建议
     
     Args:
-        request: 包含dataset_id和keyword的请求
+        request: 包含 dataset_id、partial_input 和 limit 的请求
         db: 数据库会话
         current_user: 当前用户
         
     Returns:
-        SuggestionResponse: 推荐的问题列表
+        InputSuggestResponse: 包含建议问题列表
     """
-    logger.info(
-        "Input suggestion request",
-        user_id=current_user.id,
-        dataset_id=request.dataset_id,
-        keyword=request.keyword
-    )
-    
-    # 验证Dataset访问权限
+    # 验证 Dataset 访问权限
     ds_query = db.query(Dataset).filter(Dataset.id == request.dataset_id)
     ds_query = apply_ownership_filter(ds_query, Dataset, current_user)
     dataset = ds_query.first()
     
     if not dataset:
+        logger.warning(
+            "Dataset access denied for input suggestion",
+            user_id=current_user.id,
+            dataset_id=request.dataset_id
+        )
         raise HTTPException(status_code=404, detail="Dataset not found or access denied")
     
     try:
-        suggestions = QuestionSuggester.get_input_suggestions(
+        # 调用输入联想服务
+        suggestions = await InputSuggester.suggest_questions(
             dataset_id=request.dataset_id,
-            keyword=request.keyword,
+            partial_input=request.partial_input,
             db_session=db,
-            max_suggestions=5
+            limit=request.limit
         )
         
         logger.info(
-            "Input suggestion completed",
+            "Input suggestions generated",
             user_id=current_user.id,
             dataset_id=request.dataset_id,
+            partial_input=request.partial_input,
             suggestion_count=len(suggestions)
         )
         
-        return SuggestionResponse(suggestions=suggestions)
+        return InputSuggestResponse(suggestions=suggestions)
         
-    except ValueError as e:
-        logger.error(f"Input suggestion validation failed: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(
             "Input suggestion failed",
             user_id=current_user.id,
+            dataset_id=request.dataset_id,
             error=str(e),
             exc_info=True
         )
-        error_detail = f"输入联想失败: {str(e)}" if settings.DEV else "输入联想失败，请稍后重试"
-        raise HTTPException(status_code=500, detail=error_detail)
+        # 降级：返回空列表，不影响用户使用
+        return InputSuggestResponse(suggestions=[])
 
 
-@router.post("/suggestions/next", response_model=SuggestionResponse)
-async def get_next_questions(
-    request: NextQuestionRequest,
+# =============================================================================
+# 后续推荐问题 API 端点
+# =============================================================================
+
+@router.post("/suggest-followup", response_model=FollowupSuggestResponse)
+async def suggest_followup(
+    request: FollowupSuggestRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    猜你想问（结果后推荐）：基于当前查询结果，推荐后续问题
+    后续推荐问题 - 基于当前对话结果推荐后续分析问题（猜你想问）
+    
+    功能特点：
+    - 基于当前问题和查询结果，推荐后续深入分析方向
+    - 涵盖维度拆分、对比分析、趋势分析等多个角度
+    - 使用 LLM 智能生成，确保问题的相关性和可执行性
     
     Args:
-        request: 包含当前问题、SQL、图表类型等的请求
+        request: 包含 dataset_id、current_question 和 current_result 的请求
         db: 数据库会话
         current_user: 当前用户
         
     Returns:
-        SuggestionResponse: 推荐的后续问题列表
+        FollowupSuggestResponse: 包含后续问题列表
     """
-    logger.info(
-        "Next questions request",
-        user_id=current_user.id,
-        dataset_id=request.dataset_id
-    )
-    
-    # 验证Dataset访问权限
+    # 验证 Dataset 访问权限
     ds_query = db.query(Dataset).filter(Dataset.id == request.dataset_id)
     ds_query = apply_ownership_filter(ds_query, Dataset, current_user)
     dataset = ds_query.first()
     
     if not dataset:
+        logger.warning(
+            "Dataset access denied for followup suggestion",
+            user_id=current_user.id,
+            dataset_id=request.dataset_id
+        )
         raise HTTPException(status_code=404, detail="Dataset not found or access denied")
     
     try:
-        suggestions = QuestionSuggester.get_next_questions(
+        # 调用后续问题生成服务
+        followup_questions = await VannaAnalystService.generate_followup_questions(
+            current_question=request.current_question,
+            current_result=request.current_result,
             dataset_id=request.dataset_id,
+            db_session=db,
+            limit=request.limit
+        )
+        
+        logger.info(
+            "Followup questions generated",
+            user_id=current_user.id,
+            dataset_id=request.dataset_id,
+            current_question=request.current_question[:50],
+            question_count=len(followup_questions)
+        )
+        
+        return FollowupSuggestResponse(followup_questions=followup_questions)
+        
+    except Exception as e:
+        logger.error(
+            "Followup suggestion failed",
+            user_id=current_user.id,
+            dataset_id=request.dataset_id,
+            error=str(e),
+            exc_info=True
+        )
+        # 降级：返回空列表
+        return FollowupSuggestResponse(followup_questions=[])
+
+
+# =============================================================================
+# 增强导出 API 端点
+# =============================================================================
+
+@router.post("/export-result")
+async def export_result(
+    request: ExportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    导出查询结果（支持多种格式和富内容）
+    
+    支持的导出格式：
+    - excel: Excel 文件（含数据和分析报告）
+    - excel_with_chart: Excel 文件（含图表，暂时等同于 excel）
+    - pdf: PDF 报告（含数据分析和洞察）
+    - csv: CSV 文件（仅数据）
+    
+    导出内容包括：
+    - 查询数据
+    - SQL 语句
+    - AI 洞察
+    - 数据解读
+    - 波动归因分析
+    
+    Args:
+        request: 包含问题、数据、分析结果的导出请求
+        db: 数据库会话
+        current_user: 当前用户
+        
+    Returns:
+        StreamingResponse 或 Response: 文件流
+    """
+    try:
+        # 调用增强导出服务
+        file_bytes, filename = await EnhancedExporter.export_with_metadata(
             question=request.question,
             sql=request.sql,
+            columns=request.columns,
+            rows=request.rows,
             chart_type=request.chart_type,
-            result_summary=request.result_summary,
-            db_session=db,
-            max_suggestions=4
+            chart_data=request.chart_data,
+            insight=request.insight,
+            data_interpretation=request.data_interpretation,
+            fluctuation_analysis=request.fluctuation_analysis,
+            export_format=request.format
         )
+        
+        # 确定 MIME 类型
+        if request.format == "pdf":
+            media_type = "application/pdf"
+        elif request.format == "csv":
+            media_type = "text/csv"
+        else:  # excel 和 excel_with_chart
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         
         logger.info(
-            "Next questions completed",
+            "Export completed",
             user_id=current_user.id,
-            dataset_id=request.dataset_id,
-            suggestion_count=len(suggestions)
+            format=request.format,
+            filename=filename,
+            size_kb=len(file_bytes) / 1024
         )
         
-        return SuggestionResponse(suggestions=suggestions)
-        
-    except ValueError as e:
-        logger.error(f"Next questions validation failed: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(
-            "Next questions generation failed",
-            user_id=current_user.id,
-            error=str(e),
-            exc_info=True
+        # 返回文件流
+        return Response(
+            content=file_bytes,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Access-Control-Expose-Headers": "Content-Disposition"
+            }
         )
-        error_detail = f"问题推荐失败: {str(e)}" if settings.DEV else "问题推荐失败，请稍后重试"
-        raise HTTPException(status_code=500, detail=error_detail)
-
-
-@router.get("/suggestions/popular/{dataset_id}", response_model=SuggestionResponse)
-async def get_popular_questions(
-    dataset_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    获取数据集的热门问题
-    
-    Args:
-        dataset_id: 数据集ID
-        db: 数据库会话
-        current_user: 当前用户
-        
-    Returns:
-        SuggestionResponse: 热门问题列表
-    """
-    logger.info(
-        "Popular questions request",
-        user_id=current_user.id,
-        dataset_id=dataset_id
-    )
-    
-    # 验证Dataset访问权限
-    ds_query = db.query(Dataset).filter(Dataset.id == dataset_id)
-    ds_query = apply_ownership_filter(ds_query, Dataset, current_user)
-    dataset = ds_query.first()
-    
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
-    
-    try:
-        questions = QuestionSuggester.get_popular_questions(
-            dataset_id=dataset_id,
-            db_session=db,
-            max_questions=6
-        )
-        
-        logger.info(
-            "Popular questions completed",
-            user_id=current_user.id,
-            dataset_id=dataset_id,
-            question_count=len(questions)
-        )
-        
-        return SuggestionResponse(suggestions=questions)
         
     except Exception as e:
         logger.error(
-            "Popular questions retrieval failed",
+            "Export failed",
             user_id=current_user.id,
+            format=request.format,
             error=str(e),
             exc_info=True
         )
-        error_detail = f"热门问题获取失败: {str(e)}" if settings.DEV else "热门问题获取失败，请稍后重试"
-        raise HTTPException(status_code=500, detail=error_detail)
-
-
-# =============================================================================
-# 波动归因分析 API (Fluctuation Analysis)
-# =============================================================================
-
-@router.post("/analyze/fluctuation", response_model=FluctuationAnalysisResponse)
-async def analyze_fluctuation(
-    request: FluctuationAnalysisRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    波动归因分析：对时间序列数据进行三层分析
-    - Layer 1: 统计分析（环比、同比、异常检测）
-    - Layer 2: AI智能解读
-    - Layer 3: 多维钻取
-    
-    Args:
-        request: 包含SQL、时间列、指标列等的请求
-        db: 数据库会话
-        current_user: 当前用户
-        
-    Returns:
-        FluctuationAnalysisResponse: 完整的波动分析结果
-    """
-    logger.info(
-        "Fluctuation analysis request",
-        user_id=current_user.id,
-        dataset_id=request.dataset_id,
-        time_column=request.time_column,
-        value_column=request.value_column
-    )
-    
-    # 验证Dataset访问权限
-    ds_query = db.query(Dataset).filter(Dataset.id == request.dataset_id)
-    ds_query = apply_ownership_filter(ds_query, Dataset, current_user)
-    dataset = ds_query.first()
-    
-    if not dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
-    
-    try:
-        result = FluctuationAnalyzer.analyze(
-            dataset_id=request.dataset_id,
-            sql=request.sql,
-            time_column=request.time_column,
-            value_column=request.value_column,
-            db_session=db,
-            enable_drill_down=request.enable_drill_down
-        )
-        
-        logger.info(
-            "Fluctuation analysis completed",
-            user_id=current_user.id,
-            dataset_id=request.dataset_id,
-            has_anomalies=bool(result.get('stats') and result['stats'].get('anomaly_points')),
-            has_drill_down=bool(result.get('drill_down'))
-        )
-        
-        return FluctuationAnalysisResponse(**result)
-        
-    except ValueError as e:
-        logger.error(f"Fluctuation analysis validation failed: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(
-            "Fluctuation analysis failed",
-            user_id=current_user.id,
-            error=str(e),
-            exc_info=True
-        )
-        error_detail = f"波动分析失败: {str(e)}" if settings.DEV else "波动分析失败，请稍后重试"
-        raise HTTPException(status_code=500, detail=error_detail)
+        raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")

@@ -7,6 +7,7 @@ Vanna 分析服务
 import re
 import json
 import pandas as pd
+from typing import Dict, Any, List
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, inspect
 from openai import OpenAI as OpenAIClient
@@ -500,4 +501,167 @@ Your response (JSON array only):"""
             "不同地区的业务分布情况如何?",
             "最活跃的用户有哪些特征?",
             "本月与上月相比,关键指标有何变化?"
+        ]
+    
+    @classmethod
+    async def generate_followup_questions(
+        cls,
+        current_question: str,
+        current_result: Dict[str, Any],
+        dataset_id: int,
+        db_session: Session,
+        limit: int = 3
+    ) -> List[str]:
+        """
+        基于当前问题和结果生成后续推荐问题
+        
+        Args:
+            current_question: 当前用户问题
+            current_result: 当前查询结果（包含 sql, rows, columns 等）
+            dataset_id: 数据集 ID
+            db_session: 数据库会话
+            limit: 返回问题数量（默认 3）
+            
+        Returns:
+            List[str]: 后续推荐问题列表
+        """
+        try:
+            from openai import OpenAI as OpenAIClient
+            from app.core.config import settings
+            
+            # 获取数据集信息
+            stmt = select(Dataset).options(selectinload(Dataset.datasource)).where(Dataset.id == dataset_id)
+            result = db_session.execute(stmt)
+            dataset = result.scalars().first()
+            
+            if not dataset:
+                return cls._get_default_followup_questions(current_question)
+            
+            # 构建上下文
+            context = cls._prepare_followup_context(
+                current_question=current_question,
+                current_result=current_result,
+                dataset=dataset
+            )
+            
+            # 调用 LLM 生成后续问题
+            client = OpenAIClient(
+                api_key=settings.DASHSCOPE_API_KEY,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+            )
+            
+            system_prompt = f"""你是一个数据分析助手，擅长根据当前分析结果推荐后续深入问题。
+
+任务：
+- 基于用户当前的问题和查询结果，推荐 {limit} 个后续分析问题
+- 问题应该是当前分析的自然延伸和深入
+- 问题应该具体、可执行，能带来新的洞察
+
+推荐方向：
+1. 维度拆分：按地区、类别、时间等维度细分
+2. 对比分析：同比、环比、TOP/BOTTOM 对比
+3. 趋势分析：时间序列、变化趋势
+4. 关联分析：相关因素、影响因子
+5. 异常分析：异常值、波动原因
+
+输出要求：
+- 每行一个问题
+- 不要添加序号或其他格式
+- 使用自然的中文表达
+- 问题长度 10-30 字
+"""
+
+            user_prompt = f"{context}\n\n请生成 {limit} 个后续分析问题："
+            
+            response = client.chat.completions.create(
+                model=settings.QWEN_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.7,
+                max_tokens=150
+            )
+            
+            llm_response = response.choices[0].message.content.strip()
+            
+            # 解析问题
+            questions = cls._parse_questions_from_llm(llm_response, limit)
+            
+            if not questions or len(questions) < 2:
+                logger.warning("Failed to parse followup questions, using fallback")
+                return cls._get_default_followup_questions(current_question)[:limit]
+            
+            logger.info(
+                "Followup questions generated",
+                dataset_id=dataset_id,
+                current_question=current_question[:50],
+                question_count=len(questions)
+            )
+            
+            return questions[:limit]
+            
+        except Exception as e:
+            logger.error(f"Failed to generate followup questions: {e}", exc_info=True)
+            return cls._get_default_followup_questions(current_question)[:limit]
+    
+    @staticmethod
+    def _prepare_followup_context(
+        current_question: str,
+        current_result: Dict[str, Any],
+        dataset: Dataset
+    ) -> str:
+        """准备后续问题生成的上下文"""
+        context = f"当前问题：{current_question}\n\n"
+        
+        # 添加查询结果摘要
+        rows = current_result.get("rows", [])
+        columns = current_result.get("columns", [])
+        
+        context += f"查询结果：{len(rows)} 行数据，包含字段：{', '.join(columns)}\n"
+        
+        # 添加数据解读（如果有）
+        if current_result.get("data_interpretation"):
+            di = current_result["data_interpretation"]
+            context += f"\n数据特征：{di.get('summary', '')[:100]}\n"
+        
+        # 添加波动信息（如果有）
+        if current_result.get("fluctuation_analysis") and current_result["fluctuation_analysis"].get("has_fluctuation"):
+            context += "\n检测到数据波动，可深入分析波动原因\n"
+        
+        # 添加数据集 schema 信息
+        if dataset.schema_config:
+            table_count = len(dataset.schema_config)
+            context += f"\n数据集包含 {table_count} 个表\n"
+        
+        return context
+    
+    @staticmethod
+    def _get_default_followup_questions(current_question: str) -> List[str]:
+        """生成默认后续问题（基于关键词匹配）"""
+        # 基于当前问题的关键词生成后续问题
+        question_lower = current_question.lower()
+        
+        followup_templates = {
+            "总": ["按月份拆分", "按地区拆分", "TOP10 排名"],
+            "趋势": ["同比增长率", "环比变化", "按类别拆分"],
+            "top": ["详细数据明细", "占比分析", "增长趋势"],
+            "地区": ["TOP 地区排名", "地区同比", "地区占比"],
+            "产品": ["产品销量排名", "产品趋势", "产品类别分布"],
+            "销售": ["销售额趋势", "按渠道拆分", "客户分布"],
+            "用户": ["用户活跃度", "用户增长", "用户地区分布"]
+        }
+        
+        # 查找匹配的关键词
+        for keyword, templates in followup_templates.items():
+            if keyword in question_lower:
+                return templates
+        
+        # 默认通用后续问题
+        return [
+            "按时间维度查看趋势",
+            "按类别进行拆分分析",
+            "查看 TOP10 排名",
+            "对比不同维度的数据",
+            "分析数据异常情况"
         ]

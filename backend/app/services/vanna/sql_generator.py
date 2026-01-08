@@ -38,7 +38,8 @@ class VannaSqlGenerator:
         question: str, 
         db_session: Session, 
         use_cache: bool = True,
-        conversation_history: Optional[List[Dict[str, str]]] = None
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        data_table_id: Optional[int] = None
     ):
         """
         Generate SQL and execute it with intelligent multi-round dialogue (Auto-Reflection Loop).
@@ -87,13 +88,37 @@ class VannaSqlGenerator:
                 logger.warning(f"Query rewriting failed: {e}")
                 execution_steps.append("查询补全失败，使用原始查询")
 
+        # 如果指定了数据表，增强问题提示并限制查询范围
+        enhanced_question = question
+        table_constraint = ""
+        target_table_name = None
+        
+        if data_table_id:
+            try:
+                from app.models.metadata import DataTable
+                data_table = db_session.query(DataTable).filter(DataTable.id == data_table_id).first()
+                if data_table:
+                    target_table_name = data_table.physical_table_name
+                    table_constraint = f"\n\n【重要提示】此查询必须且只能使用表: {target_table_name}。不要使用其他任何表，不要进行 JOIN 操作。"
+                    enhanced_question = f"{question}{table_constraint}"
+                    execution_steps.append(f"查询限制在表: {target_table_name}")
+                    logger.info(
+                        "Query restricted to specific table",
+                        dataset_id=dataset_id,
+                        data_table_id=data_table_id,
+                        table_name=target_table_name
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to load data table info: {e}")
+        
         # 记录请求开始
         logger.info(
             "SQL generation started",
             dataset_id=dataset_id,
             question=question[:100],
             question_length=len(question),
-            use_cache=use_cache
+            use_cache=use_cache,
+            data_table_id=data_table_id
         )
 
         # === Step 0: SQL Cache Check ===
@@ -151,6 +176,9 @@ class VannaSqlGenerator:
 
                             # 生成业务分析
                             insight = None
+                            data_interpretation = None
+                            fluctuation_analysis = None
+                            
                             if len(df) > 0:
                                 try:
                                     execution_steps.append("正在生成业务分析...")
@@ -164,7 +192,62 @@ class VannaSqlGenerator:
                                 except Exception as insight_error:
                                     logger.warning("业务分析生成失败", dataset_id=dataset_id, error=str(insight_error))
                                     execution_steps.append("业务分析生成失败")
+                                
+                                # Generate Data Interpretation
+                                try:
+                                    from app.services.data_insight import DataInsightAnalyzer
+                                    execution_steps.append("正在进行数据解读...")
+                                    data_interpretation = await DataInsightAnalyzer.analyze_data(
+                                        df=df,
+                                        question=question,
+                                        dataset_id=dataset_id
+                                    )
+                                    execution_steps.append("数据解读完成")
+                                except Exception as di_error:
+                                    logger.warning(f"Failed to generate data interpretation: {di_error}")
+                                    execution_steps.append("数据解读失败")
+                                
+                                # Generate Fluctuation Analysis
+                                try:
+                                    from app.services.fluctuation_analyzer import FluctuationAnalyzer
+                                    execution_steps.append("正在分析数据波动...")
+                                    fluctuation_analysis = await FluctuationAnalyzer.analyze_fluctuation(
+                                        df=df,
+                                        question=question,
+                                        dataset_id=dataset_id
+                                    )
+                                    if fluctuation_analysis and fluctuation_analysis.get("has_fluctuation"):
+                                        execution_steps.append("波动归因分析完成")
+                                    else:
+                                        execution_steps.append("未检测到显著波动")
+                                except Exception as fa_error:
+                                    logger.warning(f"Failed to generate fluctuation analysis: {fa_error}")
+                                    execution_steps.append("波动分析失败")
 
+                            # Generate Followup Questions (后续推荐问题)
+                            followup_questions = None
+                            if len(df) > 0:
+                                try:
+                                    execution_steps.append("正在生成后续推荐问题...")
+                                    followup_questions = await VannaAnalystService.generate_followup_questions(
+                                        current_question=question,
+                                        current_result={
+                                            "sql": cached_sql,
+                                            "columns": df.columns.tolist(),
+                                            "rows": cleaned_rows,
+                                            "chart_type": chart_type,
+                                            "data_interpretation": data_interpretation,
+                                            "fluctuation_analysis": fluctuation_analysis
+                                        },
+                                        dataset_id=dataset_id,
+                                        db_session=db_session,
+                                        limit=3
+                                    )
+                                    execution_steps.append(f"生成了 {len(followup_questions)} 个后续问题")
+                                except Exception as fq_error:
+                                    logger.warning(f"Failed to generate followup questions: {fq_error}")
+                                    execution_steps.append("后续问题生成失败")
+                            
                             total_time = (time.perf_counter() - start_time) * 1000
                             logger.info(
                                 "Request completed (from cache)",
@@ -182,7 +265,10 @@ class VannaSqlGenerator:
                                 "steps": execution_steps,
                                 "is_cached": True,
                                 "from_cache": True,
-                                "insight": insight
+                                "insight": insight,
+                                "data_interpretation": data_interpretation,
+                                "fluctuation_analysis": fluctuation_analysis,
+                                "followup_questions": followup_questions
                             }
                     except Exception as e:
                         logger.warning(
@@ -235,7 +321,9 @@ class VannaSqlGenerator:
             # === Step B: Initial Generation ===
             llm_gen_start = time.perf_counter()
             try:
-                llm_response = vn.generate_sql(question + " (请用中文回答)")
+                # 使用增强后的问题（如果有表约束）
+                query_text = enhanced_question + " (请用中文回答)"
+                llm_response = vn.generate_sql(query_text)
                 llm_gen_time = (time.perf_counter() - llm_gen_start) * 1000
 
                 logger.info(
@@ -354,6 +442,51 @@ class VannaSqlGenerator:
 
                 # === Situation 3: Valid SQL ===
                 execution_steps.append("检测到有效 SQL")
+                
+                # 如果指定了数据表，验证 SQL 是否只查询该表
+                if target_table_name:
+                    sql_upper = cleaned_sql.upper()
+                    table_name_upper = target_table_name.upper()
+                    
+                    # 检查 SQL 是否包含目标表
+                    if table_name_upper not in sql_upper:
+                        execution_steps.append(f"⚠️ SQL 未使用指定的表 {target_table_name}，需要修正")
+                        
+                        # 尝试用 LLM 修正
+                        correction_prompt = f"""用户要求只查询表 {target_table_name}，但生成的 SQL 没有使用该表。
+                        
+原始问题: {question}
+错误的 SQL: {cleaned_sql}
+
+请生成一个新的 SQL，确保：
+1. 只使用表 {target_table_name}
+2. 不要使用其他表
+3. 不要进行 JOIN 操作
+4. 回答用户的原始问题
+
+只输出修正后的 SQL，不要解释。"""
+                        
+                        try:
+                            current_response = vn.submit_prompt(correction_prompt)
+                            execution_steps.append("LLM 已生成修正方案")
+                            continue
+                        except Exception as e:
+                            logger.error(f"Failed to correct SQL for table constraint: {e}")
+                    else:
+                        # 检查是否使用了其他表（简单检测）
+                        from_match = re.search(r'FROM\s+(\w+)', sql_upper)
+                        if from_match:
+                            used_table = from_match.group(1)
+                            if used_table != table_name_upper:
+                                execution_steps.append(f"⚠️ SQL 使用了错误的表 {used_table}，应使用 {target_table_name}")
+                                # 尝试简单替换
+                                cleaned_sql = re.sub(
+                                    r'\bFROM\s+\w+\b',
+                                    f'FROM {target_table_name}',
+                                    cleaned_sql,
+                                    flags=re.IGNORECASE
+                                )
+                                execution_steps.append(f"已自动替换为 {target_table_name}")
 
                 # 添加LIMIT子句防止查询过多数据导致超时
                 sql_upper = cleaned_sql.upper()
@@ -399,6 +532,10 @@ class VannaSqlGenerator:
 
                     # Generate Business Insight
                     insight = None
+                    data_interpretation = None
+                    fluctuation_analysis = None
+                    followup_questions = None  # 在外部初始化，确保所有代码路径都能访问
+                    
                     if len(df) > 0:
                         try:
                             execution_steps.append("正在生成业务分析...")
@@ -412,6 +549,59 @@ class VannaSqlGenerator:
                         except Exception as insight_error:
                             logger.warning(f"Failed to generate insight: {insight_error}")
                             execution_steps.append("业务分析生成失败")
+                        
+                        # Generate Data Interpretation (并行执行以提高性能)
+                        try:
+                            from app.services.data_insight import DataInsightAnalyzer
+                            execution_steps.append("正在进行数据解读...")
+                            data_interpretation = await DataInsightAnalyzer.analyze_data(
+                                df=df,
+                                question=question,
+                                dataset_id=dataset_id
+                            )
+                            execution_steps.append("数据解读完成")
+                        except Exception as di_error:
+                            logger.warning(f"Failed to generate data interpretation: {di_error}")
+                            execution_steps.append("数据解读失败")
+                        
+                        # Generate Fluctuation Analysis
+                        try:
+                            from app.services.fluctuation_analyzer import FluctuationAnalyzer
+                            execution_steps.append("正在分析数据波动...")
+                            fluctuation_analysis = await FluctuationAnalyzer.analyze_fluctuation(
+                                df=df,
+                                question=question,
+                                dataset_id=dataset_id
+                            )
+                            if fluctuation_analysis and fluctuation_analysis.get("has_fluctuation"):
+                                execution_steps.append("波动归因分析完成")
+                            else:
+                                execution_steps.append("未检测到显著波动")
+                        except Exception as fa_error:
+                            logger.warning(f"Failed to generate fluctuation analysis: {fa_error}")
+                            execution_steps.append("波动分析失败")
+                        
+                        # Generate Followup Questions (后续推荐问题)
+                        try:
+                            execution_steps.append("正在生成后续推荐问题...")
+                            followup_questions = await VannaAnalystService.generate_followup_questions(
+                                current_question=question,
+                                current_result={
+                                    "sql": cleaned_sql,
+                                    "columns": df.columns.tolist(),
+                                    "rows": cleaned_rows,
+                                    "chart_type": chart_type,
+                                    "data_interpretation": data_interpretation,
+                                    "fluctuation_analysis": fluctuation_analysis
+                                },
+                                dataset_id=dataset_id,
+                                db_session=db_session,
+                                limit=3
+                            )
+                            execution_steps.append(f"生成了 {len(followup_questions)} 个后续问题")
+                        except Exception as fq_error:
+                            logger.warning(f"Failed to generate followup questions: {fq_error}")
+                            execution_steps.append("后续问题生成失败")
 
                     result = {
                         "sql": cleaned_sql,
@@ -422,7 +612,10 @@ class VannaSqlGenerator:
                         "summary": None,
                         "steps": execution_steps,
                         "from_cache": False,
-                        "insight": insight
+                        "insight": insight,
+                        "data_interpretation": data_interpretation,
+                        "fluctuation_analysis": fluctuation_analysis,
+                        "followup_questions": followup_questions
                     }
 
                     # === Step D: Write to Cache ===

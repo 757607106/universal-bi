@@ -18,9 +18,10 @@
         </div>
       </div>
 
-      <!-- 数据表列表 -->
-      <div>
-        <!-- 文件夹过滤 -->
+      <!-- Tab切换 -->
+      <el-tabs v-model="activeTab" class="mb-6">
+        <el-tab-pane label="数据表" name="tables">
+          <!-- 文件夹过滤 -->
           <div class="mb-4 flex items-center gap-2">
             <span class="text-sm text-gray-500">筛选：</span>
             <el-select
@@ -135,7 +136,18 @@
               创建数据表
             </el-button>
           </el-empty>
-      </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="数据源" name="datasources">
+          <!-- 这里可以放置数据源管理，或者跳转到数据源页面 -->
+          <div class="text-center py-10">
+            <p class="text-gray-500 mb-4">数据源管理已在"数据连接"页面</p>
+            <el-button type="primary" @click="$router.push('/connections')">
+              前往数据连接
+            </el-button>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
 
       <!-- 创建数据表对话框 -->
       <CreateDataTableDialog
@@ -232,6 +244,7 @@ import CreateDataTableDialog from './components/CreateDataTableDialog.vue'
 import FolderManager from './components/FolderManager.vue'
 
 const router = useRouter()
+const activeTab = ref('tables')
 const dataTableList = ref<DataTable[]>([])
 const folders = ref<FolderType[]>([])
 const selectedFolderId = ref<number | null | undefined>(undefined)

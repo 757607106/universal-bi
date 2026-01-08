@@ -177,32 +177,3 @@ def generate_cache_key(prefix: str, *args) -> str:
 
 # 全局 Redis 服务实例
 redis_service = RedisService()
-
-
-# 同步 Redis 客户端（用于非异步场景）
-_sync_redis_client = None
-
-def get_redis_client():
-    """
-    获取同步Redis客户端（用于非异步场景）
-    
-    Returns:
-        redis.Redis: 同步Redis客户端，如果连接失败返回None
-    """
-    global _sync_redis_client
-    
-    if _sync_redis_client is None:
-        try:
-            import redis
-            _sync_redis_client = redis.from_url(
-                settings.REDIS_URL,
-                encoding="utf-8",
-                decode_responses=True
-            )
-            # 测试连接
-            _sync_redis_client.ping()
-        except Exception as e:
-            print(f"⚠️ 同步Redis连接失败（缓存功能将降级）: {e}")
-            return None
-    
-    return _sync_redis_client

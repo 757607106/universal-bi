@@ -430,7 +430,16 @@ const handleSubmit = async () => {
       )
     }
     
-    ElMessage.success('数据表创建成功')
+    // 根据创建方式显示不同的成功消息
+    if (creationMethod.value === 'excel_upload') {
+      ElMessage.success({
+        message: '数据表创建成功！正在后台训练数据集，稍后即可在智能问答页面使用。',
+        duration: 5000
+      })
+    } else {
+      ElMessage.success('数据表创建成功')
+    }
+    
     emit('refresh')
     handleClose()
   } catch (error: any) {

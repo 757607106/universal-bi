@@ -228,3 +228,35 @@ export const uploadQuickDataset = async (file: File, name?: string): Promise<Dat
     }
   })
 }
+
+// Computed Metrics APIs
+export interface ComputedMetric {
+  id: number
+  dataset_id: number
+  name: string
+  formula: string
+  description?: string
+  created_at: string
+}
+
+export interface ComputedMetricCreate {
+  name: string
+  formula: string
+  description?: string
+}
+
+export const getComputedMetrics = async (datasetId: number): Promise<ComputedMetric[]> => {
+  return await http.get<ComputedMetric[], any>(`/datasets/${datasetId}/metrics`)
+}
+
+export const createComputedMetric = async (datasetId: number, data: ComputedMetricCreate): Promise<ComputedMetric> => {
+  return await http.post<ComputedMetric, ComputedMetricCreate>(`/datasets/${datasetId}/metrics`, data)
+}
+
+export const updateComputedMetric = async (metricId: number, data: ComputedMetricCreate): Promise<ComputedMetric> => {
+  return await http.put<ComputedMetric, ComputedMetricCreate>(`/datasets/metrics/${metricId}`, data)
+}
+
+export const deleteComputedMetric = async (metricId: number): Promise<{ message: string }> => {
+  return await http.delete<{ message: string }, any>(`/datasets/metrics/${metricId}`)
+}

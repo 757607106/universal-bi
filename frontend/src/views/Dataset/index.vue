@@ -9,7 +9,7 @@
         <div class="flex gap-3">
           <el-button @click="uploadDialogVisible = true" class="bg-green-600 shadow-lg shadow-green-500/30 hover:bg-green-500 border-none text-white">
             <el-icon class="mr-2"><Upload /></el-icon>
-            导入 Excel/CSV
+            上传Excel/CSV
           </el-button>
           <el-button type="primary" @click="wizardVisible = true" class="bg-blue-600 shadow-lg shadow-blue-500/30 hover:bg-blue-500 border-none">
             <el-icon class="mr-2"><Plus /></el-icon>
@@ -30,14 +30,14 @@
                 <el-icon class="text-blue-500"><Files /></el-icon>
                 <span class="font-bold text-gray-900 dark:text-slate-100 truncate">{{ dataset.name }}</span>
               </div>
-              <el-tag :type="getStatusType(dataset.status || dataset.training_status)" effect="dark" size="small">
+              <el-tag :type="getStatusType(dataset.status)" effect="dark" size="small">
                 <div class="flex items-center gap-1">
-                  <el-icon v-if="(dataset.status || dataset.training_status) === 'training'" class="is-loading"><Loading /></el-icon>
-                  <el-icon v-else-if="(dataset.status || dataset.training_status) === 'completed'" class="text-green-500"><CircleCheck /></el-icon>
-                  <el-icon v-else-if="(dataset.status || dataset.training_status) === 'failed'" class="text-red-500"><CircleClose /></el-icon>
-                  <el-icon v-else-if="(dataset.status || dataset.training_status) === 'paused'" class="text-gray-400"><VideoPause /></el-icon>
-                  <el-icon v-else-if="(dataset.status || dataset.training_status) === 'pending'" class="text-orange-500"><Clock /></el-icon>
-                  {{ getStatusText(dataset.status || dataset.training_status) }}
+                  <el-icon v-if="dataset.status === 'training'" class="is-loading"><Loading /></el-icon>
+                  <el-icon v-else-if="dataset.status === 'completed'" class="text-green-500"><CircleCheck /></el-icon>
+                  <el-icon v-else-if="dataset.status === 'failed'" class="text-red-500"><CircleClose /></el-icon>
+                  <el-icon v-else-if="dataset.status === 'paused'" class="text-gray-400"><VideoPause /></el-icon>
+                  <el-icon v-else-if="dataset.status === 'pending'" class="text-orange-500"><Clock /></el-icon>
+                  {{ getStatusText(dataset.status) }}
                 </div>
               </el-tag>
             </div>
@@ -56,39 +56,76 @@
 
             <div class="flex items-center justify-between text-sm">
               <span class="text-gray-500 dark:text-slate-400">上次训练</span>
-              <span class="text-gray-600 dark:text-slate-300">{{ formatDate(dataset.last_train_at || dataset.last_trained_at) }}</span>
+              <span class="text-gray-600 dark:text-slate-300">{{ formatDate(dataset.last_train_at) }}</span>
             </div>
-            
-            <div class="pt-4 border-t border-gray-200 dark:border-slate-700 flex justify-end gap-2 flex-wrap">
-              <el-button size="small" @click="handleGoModeling(dataset)" class="!bg-purple-50 dark:!bg-purple-500/10 !border-purple-200 dark:!border-purple-500/50 !text-purple-600 dark:!text-purple-400 hover:!bg-purple-100 dark:hover:!bg-purple-500/20">
-                <el-icon class="mr-1"><MagicStick /></el-icon>
-                可视化建模
-              </el-button>
-              <el-button size="small" @click="handleOpenBusinessTermManager(dataset)" class="!bg-orange-50 dark:!bg-orange-500/10 !border-orange-200 dark:!border-orange-500/50 !text-orange-600 dark:!text-orange-400 hover:!bg-orange-100 dark:hover:!bg-orange-500/20">
-                <el-icon class="mr-1"><Collection /></el-icon>
-                业务术语
-              </el-button>
-              <el-button size="small" @click="handleViewTrainingData(dataset)" class="!bg-green-50 dark:!bg-green-500/10 !border-green-200 dark:!border-green-500/50 !text-green-600 dark:!text-green-400 hover:!bg-green-100 dark:hover:!bg-green-500/20">
-                <el-icon class="mr-1"><Files /></el-icon>
-                训练数据
-              </el-button>
-              <el-button v-if="(dataset.status || dataset.training_status) !== 'training'" size="small" @click="handleRetrain(dataset)" class="!bg-gray-100 dark:!bg-slate-700 hover:!bg-gray-200 dark:hover:!bg-slate-600 !border-gray-200 dark:!border-slate-600 !text-gray-700 dark:!text-slate-200">
-                重新训练
-              </el-button>
-              <el-button v-if="(dataset.status || dataset.training_status) === 'training'" size="small" type="primary" @click="handleShowProgress(dataset)" class="!bg-blue-500 hover:!bg-blue-600">
-                <el-icon class="mr-1"><View /></el-icon>
-                查看进度
-              </el-button>
-              <el-button size="small" type="danger" plain @click="handleDelete(dataset)" class="!bg-red-50 dark:!bg-red-500/10 !border-red-200 dark:!border-red-500/50 !text-red-600 dark:!text-red-400 hover:!bg-red-100 dark:hover:!bg-red-500/20">
-                <el-icon class="mr-1"><Delete /></el-icon>
-                删除
-              </el-button>
+
+            <div class="pt-4 border-t border-gray-200 dark:border-slate-700 flex items-center justify-between">
+              <!-- 主要操作按钮 -->
+              <div class="flex items-center gap-2">
+                <el-button size="small" @click="handleGoModeling(dataset)" class="!bg-purple-50 dark:!bg-purple-500/10 !border-purple-200 dark:!border-purple-500/50 !text-purple-600 dark:!text-purple-400 hover:!bg-purple-100 dark:hover:!bg-purple-500/20">
+                  <el-icon class="mr-1"><MagicStick /></el-icon>
+                  建模
+                </el-button>
+                <el-button v-if="dataset.status === 'completed'" size="small" type="primary" @click="handleGoChat(dataset)" class="!bg-blue-500 hover:!bg-blue-600">
+                  <el-icon class="mr-1"><ChatDotRound /></el-icon>
+                  开始问答
+                </el-button>
+                <el-button v-if="dataset.status === 'training'" size="small" type="primary" @click="handleShowProgress(dataset)" class="!bg-blue-500 hover:!bg-blue-600">
+                  <el-icon class="mr-1"><View /></el-icon>
+                  查看进度
+                </el-button>
+              </div>
+
+              <!-- 更多操作下拉菜单 -->
+              <el-dropdown trigger="click" @command="(cmd: string) => handleMoreAction(cmd, dataset)">
+                <el-button size="small" class="!bg-gray-100 dark:!bg-slate-700 hover:!bg-gray-200 dark:hover:!bg-slate-600 !border-gray-200 dark:!border-slate-600 !text-gray-600 dark:!text-slate-300">
+                  <el-icon><More /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="terms">
+                      <el-icon class="mr-2 text-orange-500"><Collection /></el-icon>
+                      业务术语
+                    </el-dropdown-item>
+                    <el-dropdown-item command="metrics">
+                      <el-icon class="mr-2 text-blue-500"><TrendCharts /></el-icon>
+                      计算指标
+                    </el-dropdown-item>
+                    <el-dropdown-item command="training-data">
+                      <el-icon class="mr-2 text-green-500"><Files /></el-icon>
+                      训练数据
+                    </el-dropdown-item>
+                    <el-dropdown-item v-if="dataset.status !== 'training'" command="retrain" divided>
+                      <el-icon class="mr-2 text-gray-500"><Refresh /></el-icon>
+                      重新训练
+                    </el-dropdown-item>
+                    <el-dropdown-item command="delete" divided>
+                      <el-icon class="mr-2 text-red-500"><Delete /></el-icon>
+                      <span class="text-red-500">删除数据集</span>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
           </div>
         </el-card>
       </div>
 
-      <el-empty v-if="datasetList.length === 0" description="暂无数据集，请点击右上角创建" />
+      <el-empty v-if="datasetList.length === 0" description="暂无数据集">
+        <template #image>
+          <el-icon class="text-6xl text-gray-300 dark:text-gray-600"><Files /></el-icon>
+        </template>
+        <div class="flex gap-2">
+          <el-button type="primary" @click="wizardVisible = true">
+            <el-icon class="mr-1"><Plus /></el-icon>
+            创建数据集
+          </el-button>
+          <el-button @click="uploadDialogVisible = true">
+            <el-icon class="mr-1"><Upload /></el-icon>
+            上传文件
+          </el-button>
+        </div>
+      </el-empty>
 
       <DatasetWizard
         v-model="wizardVisible"
@@ -112,9 +149,15 @@
         @refresh="fetchDatasets"
       />
 
-      <UploadExcelDialog
+      <FileUploadDialog
         v-model="uploadDialogVisible"
-        @success="handleUploadSuccess"
+        @refresh="fetchDatasets"
+      />
+
+      <ComputedMetricManager
+        v-model="metricManagerVisible"
+        :dataset-id="selectedDatasetId"
+        @refresh="fetchDatasets"
       />
     </div>
   </div>
@@ -123,14 +166,15 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Plus, Files, Loading, MagicStick, View, CircleCheck, CircleClose, VideoPause, Clock, Delete, Collection, Upload } from '@element-plus/icons-vue'
+import { Plus, Upload, Files, Loading, MagicStick, View, CircleCheck, CircleClose, VideoPause, Clock, Delete, Collection, TrendCharts, More, Refresh, ChatDotRound } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getDatasetList, trainDataset, deleteDataset, type Dataset } from '@/api/dataset'
 import DatasetWizard from './components/DatasetWizard.vue'
 import TrainingProgressDialog from './components/TrainingProgressDialog.vue'
 import TrainingDataDialog from './components/TrainingDataDialog.vue'
 import BusinessTermManager from './components/BusinessTermManager.vue'
-import UploadExcelDialog from '@/components/UploadExcelDialog.vue'
+import FileUploadDialog from './components/FileUploadDialog.vue'
+import ComputedMetricManager from './components/ComputedMetricManager.vue'
 
 const router = useRouter()
 const wizardVisible = ref(false)
@@ -138,6 +182,7 @@ const uploadDialogVisible = ref(false)
 const progressDialogVisible = ref(false)
 const trainingDataDialogVisible = ref(false)
 const businessTermManagerVisible = ref(false)
+const metricManagerVisible = ref(false)
 const selectedDatasetId = ref(0)
 const datasetList = ref<Dataset[]>([])
 let pollingTimer: ReturnType<typeof setInterval> | null = null
@@ -153,7 +198,7 @@ const fetchDatasets = async () => {
 }
 
 const checkPolling = (list: Dataset[]) => {
-  const hasTraining = list.some(d => (d.status || d.training_status) === 'training' || (d.status || d.training_status) === 'pending')
+  const hasTraining = list.some(d => d.status === 'training' || d.status === 'pending')
   
   // 【修复】只有在有训练任务且轮询未开启时才启动
   if (hasTraining && !pollingTimer) {
@@ -198,6 +243,38 @@ const handleViewTrainingData = (dataset: Dataset) => {
 const handleOpenBusinessTermManager = (dataset: Dataset) => {
   selectedDatasetId.value = dataset.id
   businessTermManagerVisible.value = true
+}
+
+// 打开计算指标管理
+const handleOpenMetricManager = (dataset: Dataset) => {
+  selectedDatasetId.value = dataset.id
+  metricManagerVisible.value = true
+}
+
+// 跳转到问答页面
+const handleGoChat = (dataset: Dataset) => {
+  router.push({ path: '/chat', query: { dataset: dataset.id.toString() } })
+}
+
+// 处理更多操作菜单
+const handleMoreAction = (command: string, dataset: Dataset) => {
+  switch (command) {
+    case 'terms':
+      handleOpenBusinessTermManager(dataset)
+      break
+    case 'metrics':
+      handleOpenMetricManager(dataset)
+      break
+    case 'training-data':
+      handleViewTrainingData(dataset)
+      break
+    case 'retrain':
+      handleRetrain(dataset)
+      break
+    case 'delete':
+      handleDelete(dataset)
+      break
+  }
 }
 
 const handleDelete = async (dataset: Dataset) => {
@@ -259,12 +336,6 @@ const formatDate = (dateStr: string | null) => {
 // 跳转到可视化建模页面
 const handleGoModeling = (dataset: any) => {
   router.push(`/datasets/modeling/${dataset.id}`)
-}
-
-// 处理上传成功
-const handleUploadSuccess = () => {
-  ElMessage.success('数据集导入成功')
-  fetchDatasets()
 }
 
 onMounted(() => {

@@ -251,10 +251,3 @@ export const queryDataTable = (
     params: { page, page_size: pageSize }
   })
 }
-
-/**
- * 为数据表获取或创建对应的Dataset
- */
-export const getOrCreateDataset = (id: number): Promise<any> => {
-  return http.get(`/data-tables/${id}/dataset`)
-}
