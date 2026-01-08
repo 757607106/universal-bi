@@ -39,6 +39,31 @@
           <p class="text-gray-500 dark:text-slate-400 max-w-md mx-auto transition-colors">选择下方推荐指令或直接输入问题，开始探索您的数据价值。</p>
         </div>
         
+        <!-- 猜你想问 - Suggested Questions -->
+        <div v-if="suggestedQuestions.length > 0" class="w-full max-w-3xl mb-8">
+          <div class="text-center mb-4">
+            <h3 class="text-lg font-medium text-gray-700 dark:text-slate-300 flex items-center justify-center gap-2">
+              <el-icon class="text-cyan-500"><MagicStick /></el-icon>
+              为您推荐以下分析维度
+            </h3>
+          </div>
+          <el-space wrap :size="12" class="w-full justify-center">
+            <el-tag
+              v-for="(question, idx) in suggestedQuestions"
+              :key="idx"
+              size="large"
+              effect="plain"
+              class="cursor-pointer !px-5 !py-3 !text-sm !bg-white dark:!bg-slate-800/60 !border-gray-200 dark:!border-slate-600 !text-gray-700 dark:!text-slate-300 hover:!bg-gradient-to-r hover:!from-blue-50 hover:!to-cyan-50 dark:hover:!from-slate-700 dark:hover:!to-slate-600 hover:!border-blue-300 dark:hover:!border-cyan-500/50 hover:!text-blue-600 dark:hover:!text-cyan-400 !rounded-xl transition-all duration-300 hover:shadow-md hover:-translate-y-0.5"
+              @click="handleQuickAsk(question)"
+            >
+              <span class="flex items-center gap-2">
+                <el-icon><ChatLineRound /></el-icon>
+                {{ question }}
+              </span>
+            </el-tag>
+          </el-space>
+        </div>
+        
         <!-- Recommendation Cards -->
         <div class="grid grid-cols-2 gap-4 w-full max-w-3xl">
           <div 
@@ -418,12 +443,15 @@ import {
   DataBoard,
   DataAnalysis,
   Lightning,
-  Refresh
+  Refresh,
+  MagicStick,
+  ChatLineRound
 } from '@element-plus/icons-vue'
 import { getDatasetList, type Dataset } from '@/api/dataset'
 import { sendChat, submitFeedback, generateSummary } from '@/api/chat'
 import { getDashboards, createDashboard, addCardToDashboard, type Dashboard } from '@/api/dashboard'
 import DynamicChart from '@/components/Charts/DynamicChart.vue'
+import { getSuggestedQuestions } from '@/api/dataset'
 
 interface Message {
   type: 'user' | 'ai'
@@ -513,6 +541,10 @@ const submittingFeedback = ref(false)
 const currentFeedbackMessage = ref<Message | null>(null)
 const currentFeedbackMessageIndex = ref<number>(-1)
 
+// Suggested Questions State
+const suggestedQuestions = ref<string[]>([])
+const loadingSuggestions = ref(false)
+
 onMounted(async () => {
   loadingDatasets.value = true
   try {
@@ -521,6 +553,8 @@ onMounted(async () => {
     datasets.value = res.filter(d => (d.status || d.training_status) === 'completed')
     if (datasets.value.length > 0) {
       currentDatasetId.value = datasets.value[0].id
+      // Load suggested questions for the first dataset
+      await loadSuggestedQuestions(currentDatasetId.value)
     }
   } catch (error) {
     ElMessage.error('Failed to load datasets')
@@ -541,6 +575,15 @@ const handleCardClick = (card: typeof recommendCards[0]) => {
     return
   }
   inputMessage.value = card.query
+  handleSend()
+}
+
+const handleQuickAsk = (question: string) => {
+  if (!currentDatasetId.value) {
+    ElMessage.warning('请先选择一个数据集')
+    return
+  }
+  inputMessage.value = question
   handleSend()
 }
 
@@ -569,6 +612,22 @@ const scrollToBottom = async () => {
   await nextTick()
   if (chatContainer.value) {
     chatContainer.value.scrollTop = chatContainer.value.scrollHeight
+  }
+}
+
+const loadSuggestedQuestions = async (datasetId: number) => {
+  if (!datasetId) return
+  
+  loadingSuggestions.value = true
+  try {
+    const questions = await getSuggestedQuestions(datasetId, 5)
+    suggestedQuestions.value = questions
+  } catch (error) {
+    console.error('Failed to load suggested questions:', error)
+    // 失败时不显示错误，静默失败
+    suggestedQuestions.value = []
+  } finally {
+    loadingSuggestions.value = false
   }
 }
 

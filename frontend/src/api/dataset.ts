@@ -207,3 +207,24 @@ export const createView = async (data: CreateViewRequest) => {
 
 // Re-export or wrap the datasource table fetching
 export const getDbTables = getDataSourceTables
+
+// Suggested Questions API
+export const getSuggestedQuestions = async (datasetId: number, limit: number = 5): Promise<string[]> => {
+  const response = await http.get<{ questions: string[] }, any>(`/datasets/${datasetId}/suggested_questions?limit=${limit}`)
+  return response.questions
+}
+
+// Upload Quick Analysis API
+export const uploadQuickDataset = async (file: File, name?: string): Promise<Dataset> => {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (name) {
+    formData.append('name', name)
+  }
+  
+  return await http.post<Dataset, FormData>('/datasets/upload_quick_analysis', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  })
+}

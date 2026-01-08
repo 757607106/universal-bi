@@ -128,3 +128,20 @@ class ChatMessage(Base):
     dataset = relationship("Dataset")
     user = relationship("User", foreign_keys=[user_id])
     owner = relationship("User", foreign_keys=[owner_id])
+
+
+class ComputedMetric(Base):
+    """计算指标模型 - 存储业务指标定义、计算公式和语义描述"""
+    __tablename__ = "computed_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    name = Column(String(255), index=True, nullable=False)  # 指标名称，如"客单价"
+    formula = Column(Text, nullable=False)  # SQL表达式，如 "SUM(gmv) / COUNT(DISTINCT user_id)"
+    description = Column(Text, nullable=True)  # 业务口径描述
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    dataset = relationship("Dataset")
+    owner = relationship("User")

@@ -130,3 +130,8 @@ class TrainDocRequest(BaseModel):
     """Request to train a documentation"""
     content: str
     doc_type: Optional[str] = "general"  # general, business_rule, etc.
+
+
+class SuggestedQuestions(BaseModel):
+    """Suggested questions response"""
+    questions: List[str]

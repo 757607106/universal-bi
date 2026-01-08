@@ -78,6 +78,7 @@ const router = useRouter()
 
 const baseNavigation = [
   { id: 'connections', label: '数据连接', icon: useRenderIcon('ep:data-analysis'), path: '/connections' },
+  { id: 'data-tables', label: '数据表', icon: useRenderIcon('ep:document'), path: '/data-tables' },
   { id: 'datasets', label: '数据集管理', icon: useRenderIcon('ep:files'), path: '/datasets' },
   { id: 'chat', label: '智能问答', icon: useRenderIcon('ep:chat-dot-round'), path: '/chat' },
   { id: 'dashboard', label: '数据看板', icon: useRenderIcon('ep:grid'), path: '/dashboard' },

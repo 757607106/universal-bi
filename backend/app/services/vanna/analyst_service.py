@@ -350,3 +350,154 @@ Your response (JSON array only):"""
         except Exception as e:
             logger.error(f"Failed to analyze relationships: {e}")
             raise ValueError(f"关联分析失败: {str(e)}")
+
+    @classmethod
+    def generate_suggested_questions(cls, dataset_id: int, db_session: Session, limit: int = 5) -> list[str]:
+        """
+        Generate suggested questions based on dataset schema metadata.
+
+        Args:
+            dataset_id: Dataset ID
+            db_session: Database session
+            limit: Number of questions to generate (default: 5)
+
+        Returns:
+            list[str]: List of suggested questions
+        """
+        try:
+            # Get dataset and datasource info
+            stmt = select(Dataset).options(selectinload(Dataset.datasource)).where(Dataset.id == dataset_id)
+            result = db_session.execute(stmt)
+            dataset = result.scalars().first()
+
+            if not dataset or not dataset.datasource:
+                logger.warning(f"Dataset {dataset_id} or datasource not found")
+                return cls._get_default_questions()
+
+            # Get schema metadata (table names and key fields)
+            schema_tables = dataset.schema_config or []
+            if not schema_tables:
+                logger.warning(f"Dataset {dataset_id} has no schema_config")
+                return cls._get_default_questions()
+
+            datasource = dataset.datasource
+            engine = DBInspector.get_engine(datasource)
+            inspector = inspect(engine)
+
+            # Gather metadata
+            tables_metadata = []
+            for table_name in schema_tables[:10]:  # Limit to 10 tables to avoid prompt overflow
+                try:
+                    columns = inspector.get_columns(table_name)
+                    # Extract key fields (id, name, amount, date, etc.)
+                    key_fields = []
+                    for col in columns:
+                        col_name_lower = col['name'].lower()
+                        # Prioritize meaningful business fields
+                        if any(keyword in col_name_lower for keyword in ['id', 'name', 'amount', 'price', 'total', 'date', 'time', 'status', 'count', 'quantity']):
+                            key_fields.append(col['name'])
+                    
+                    tables_metadata.append({
+                        'table': table_name,
+                        'key_fields': key_fields[:5]  # Limit to 5 key fields per table
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to get columns for {table_name}: {e}")
+                    continue
+
+            if not tables_metadata:
+                logger.warning(f"No table metadata retrieved for dataset {dataset_id}")
+                return cls._get_default_questions()
+
+            # Build prompt
+            metadata_desc = "\n".join([
+                f"- {item['table']}: {', '.join(item['key_fields'])}" 
+                for item in tables_metadata
+            ])
+
+            prompt = f"""作为一个商业智能分析师,请根据以下数据库结构,生成 {limit} 个用户最可能感兴趣的业务分析问题。
+
+数据库表结构:
+{metadata_desc}
+
+要求:
+1. 问题要具体、业务导向,不要包含 SQL 代码
+2. 每个问题一行,直接输出问题文本
+3. 使用中文
+4. 问题应涵盖统计、趋势、排名、分布等不同分析维度
+5. 不要添加编号或前缀,直接输出问题列表
+
+请生成 {limit} 个问题:"""
+
+            # Call LLM
+            client = OpenAIClient(
+                api_key=settings.DASHSCOPE_API_KEY,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+            )
+
+            response = client.chat.completions.create(
+                model=settings.QWEN_MODEL,
+                messages=[
+                    {"role": "system", "content": "你是一个商业智能分析师,擅长生成业务分析问题。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=500
+            )
+
+            llm_response = response.choices[0].message.content.strip()
+            logger.info(f"LLM suggested questions response: {llm_response[:200]}...")
+
+            # Parse response into list of questions
+            questions = cls._parse_questions_from_llm(llm_response, limit)
+            
+            if not questions:
+                logger.warning(f"Failed to parse questions from LLM response")
+                return cls._get_default_questions()
+
+            return questions[:limit]
+
+        except Exception as e:
+            logger.error(f"Failed to generate suggested questions: {e}")
+            return cls._get_default_questions()
+
+    @staticmethod
+    def _parse_questions_from_llm(llm_response: str, limit: int) -> list[str]:
+        """
+        Parse LLM response into a list of questions.
+        
+        Handles various formats:
+        - Numbered list (1. question)
+        - Bullet points (- question)
+        - Plain lines
+        """
+        questions = []
+        lines = llm_response.strip().split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Remove common prefixes
+            line = re.sub(r'^[\d]+\.\s*', '', line)  # Remove "1. "
+            line = re.sub(r'^[-*•]\s*', '', line)     # Remove "- ", "* ", "• "
+            line = re.sub(r'^\(\d+\)\s*', '', line)   # Remove "(1) "
+            
+            if len(line) > 10:  # Valid question should be at least 10 chars
+                questions.append(line)
+        
+        return questions[:limit]
+
+    @staticmethod
+    def _get_default_questions() -> list[str]:
+        """
+        Return a default set of generic business analysis questions.
+        """
+        return [
+            "最近一个月的销售额趋势如何?",
+            "哪些产品的销售量最高?",
+            "不同地区的业务分布情况如何?",
+            "最活跃的用户有哪些特征?",
+            "本月与上月相比,关键指标有何变化?"
+        ]

@@ -7,6 +7,10 @@
           <p class="text-gray-500 dark:text-slate-400">构建和管理用于 AI 分析的业务数据集</p>
         </div>
         <div class="flex gap-3">
+          <el-button @click="uploadDialogVisible = true" class="bg-green-600 shadow-lg shadow-green-500/30 hover:bg-green-500 border-none text-white">
+            <el-icon class="mr-2"><Upload /></el-icon>
+            导入 Excel/CSV
+          </el-button>
           <el-button type="primary" @click="wizardVisible = true" class="bg-blue-600 shadow-lg shadow-blue-500/30 hover:bg-blue-500 border-none">
             <el-icon class="mr-2"><Plus /></el-icon>
             新建数据集
@@ -107,6 +111,11 @@
         :dataset-id="selectedDatasetId"
         @refresh="fetchDatasets"
       />
+
+      <UploadExcelDialog
+        v-model="uploadDialogVisible"
+        @success="handleUploadSuccess"
+      />
     </div>
   </div>
 </template>
@@ -114,16 +123,18 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Plus, Files, Loading, MagicStick, View, CircleCheck, CircleClose, VideoPause, Clock, Delete, Collection } from '@element-plus/icons-vue'
+import { Plus, Files, Loading, MagicStick, View, CircleCheck, CircleClose, VideoPause, Clock, Delete, Collection, Upload } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getDatasetList, trainDataset, deleteDataset, type Dataset } from '@/api/dataset'
 import DatasetWizard from './components/DatasetWizard.vue'
 import TrainingProgressDialog from './components/TrainingProgressDialog.vue'
 import TrainingDataDialog from './components/TrainingDataDialog.vue'
 import BusinessTermManager from './components/BusinessTermManager.vue'
+import UploadExcelDialog from '@/components/UploadExcelDialog.vue'
 
 const router = useRouter()
 const wizardVisible = ref(false)
+const uploadDialogVisible = ref(false)
 const progressDialogVisible = ref(false)
 const trainingDataDialogVisible = ref(false)
 const businessTermManagerVisible = ref(false)
@@ -248,6 +259,12 @@ const formatDate = (dateStr: string | null) => {
 // 跳转到可视化建模页面
 const handleGoModeling = (dataset: any) => {
   router.push(`/datasets/modeling/${dataset.id}`)
+}
+
+// 处理上传成功
+const handleUploadSuccess = () => {
+  ElMessage.success('数据集导入成功')
+  fetchDatasets()
 }
 
 onMounted(() => {

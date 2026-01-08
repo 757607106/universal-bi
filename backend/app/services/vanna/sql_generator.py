@@ -17,6 +17,9 @@ from app.services.db_inspector import DBInspector
 from app.services.vanna.instance_manager import VannaInstanceManager
 from app.services.vanna.cache_service import VannaCacheService
 from app.services.vanna import utils
+from app.services.chart_recommender import ChartRecommender
+from app.services.query_rewriter import QueryRewriter
+from typing import Optional, List, Dict
 
 logger = get_logger(__name__)
 
@@ -29,24 +32,33 @@ class VannaSqlGenerator:
     """
 
     @classmethod
-    async def generate_result(cls, dataset_id: int, question: str, db_session: Session, use_cache: bool = True):
+    async def generate_result(
+        cls, 
+        dataset_id: int, 
+        question: str, 
+        db_session: Session, 
+        use_cache: bool = True,
+        conversation_history: Optional[List[Dict[str, str]]] = None
+    ):
         """
         Generate SQL and execute it with intelligent multi-round dialogue (Auto-Reflection Loop).
-        Now with Redis-based query caching for improved performance.
+        Now with Redis-based query caching and context-aware query rewriting.
 
         Features:
         1. Redis-based SQL caching with 24-hour TTL
-        2. LLM-driven intermediate SQL detection and execution
-        3. Intelligent clarification generation when ambiguous
-        4. Graceful text-only responses (no exceptions for non-SQL)
-        5. LLM-powered friendly error messages on failures
-        6. All responses in Chinese
+        2. Context-aware query rewriting for multi-turn conversations
+        3. LLM-driven intermediate SQL detection and execution
+        4. Intelligent clarification generation when ambiguous
+        5. Graceful text-only responses (no exceptions for non-SQL)
+        6. LLM-powered friendly error messages on failures
+        7. All responses in Chinese
 
         Args:
             dataset_id: Dataset ID
             question: User's question
             db_session: Database session
             use_cache: Whether to use cache (default: True)
+            conversation_history: Conversation history for context understanding
 
         Returns:
             dict: Result with sql, columns, rows, chart_type, etc.
@@ -57,6 +69,23 @@ class VannaSqlGenerator:
 
         execution_steps = []
         start_time = time.perf_counter()
+        
+        # === Step 0: Query Rewriting (if needed) ===
+        original_question = question
+        if conversation_history and QueryRewriter.should_rewrite(question, conversation_history):
+            try:
+                execution_steps.append("检测到省略查询，正在补全...")
+                question = QueryRewriter.rewrite_query(question, conversation_history)
+                execution_steps.append(f"查询已补全：{question}")
+                logger.info(
+                    "Query rewritten",
+                    original=original_question,
+                    rewritten=question,
+                    dataset_id=dataset_id
+                )
+            except Exception as e:
+                logger.warning(f"Query rewriting failed: {e}")
+                execution_steps.append("查询补全失败，使用原始查询")
 
         # 记录请求开始
         logger.info(
@@ -100,7 +129,9 @@ class VannaSqlGenerator:
                             # 重新执行 SQL 查询
                             sql_exec_start = time.perf_counter()
                             engine = DBInspector.get_engine(dataset.datasource)
-                            df = pd.read_sql(cached_sql, engine)
+                            # 转义SQL中的%符号
+                            escaped_cached_sql = cached_sql.replace('%', '%%')
+                            df = pd.read_sql(escaped_cached_sql, engine)
                             sql_exec_time = (time.perf_counter() - sql_exec_start) * 1000
 
                             logger.info(
@@ -264,7 +295,9 @@ class VannaSqlGenerator:
 
                     try:
                         intermediate_exec_start = time.perf_counter()
-                        df_intermediate = pd.read_sql(intermediate_sql, engine)
+                        # 转义SQL中的%符号
+                        escaped_intermediate_sql = intermediate_sql.replace('%', '%%')
+                        df_intermediate = pd.read_sql(escaped_intermediate_sql, engine)
                         intermediate_exec_time = (time.perf_counter() - intermediate_exec_start) * 1000
 
                         logger.info(
@@ -339,7 +372,10 @@ class VannaSqlGenerator:
 
                 try:
                     final_exec_start = time.perf_counter()
-                    df = pd.read_sql(cleaned_sql, engine)
+                    # 转义SQL中的%符号，防止pymysql将其视为参数占位符
+                    # 例如：DATE_FORMAT(..., '%Y-%m') 需要转义为 DATE_FORMAT(..., '%%Y-%%m')
+                    escaped_sql = cleaned_sql.replace('%', '%%')
+                    df = pd.read_sql(escaped_sql, engine)
                     final_exec_time = (time.perf_counter() - final_exec_start) * 1000
 
                     logger.info(
@@ -352,8 +388,12 @@ class VannaSqlGenerator:
                     )
                     execution_steps.append(f"SQL 执行成功，返回 {len(df)} 行")
 
-                    chart_type = utils.infer_chart_type(df)
-                    execution_steps.append(f"推断图表类型: {chart_type}")
+                    # 使用智能图表推荐器
+                    chart_type = ChartRecommender.recommend(df, question)
+                    execution_steps.append(f"智能推荐图表类型: {chart_type}")
+                    
+                    # 获取备用图表类型
+                    alternative_charts = ChartRecommender.get_alternative_charts(df, chart_type)
 
                     cleaned_rows = utils.serialize_dataframe(df)
 
@@ -378,6 +418,7 @@ class VannaSqlGenerator:
                         "columns": df.columns.tolist(),
                         "rows": cleaned_rows,
                         "chart_type": chart_type,
+                        "alternative_charts": alternative_charts,
                         "summary": None,
                         "steps": execution_steps,
                         "from_cache": False,

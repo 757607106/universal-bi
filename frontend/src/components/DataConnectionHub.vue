@@ -44,9 +44,15 @@
         />
       </div>
 
-      <div v-if="filteredConnections.length === 0" class="text-center py-12 text-gray-400 dark:text-gray-600">
-        <p>未找到匹配的连接</p>
-      </div>
+      <el-empty v-if="filteredConnections.length === 0" description="暂无数据连接">
+        <template #image>
+          <el-icon class="text-6xl text-gray-300 dark:text-gray-600"><Connection /></el-icon>
+        </template>
+        <el-button type="primary" @click="handleAddClick">
+          <el-icon class="mr-1"><Plus /></el-icon>
+          添加连接
+        </el-button>
+      </el-empty>
     </div>
 
     <AddConnectionDialog
@@ -105,7 +111,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Plus, Search } from '@element-plus/icons-vue'
+import { Plus, Search, Connection } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import ConnectionCard from './ConnectionCard.vue'
 import AddConnectionDialog from './AddConnectionDialog.vue'

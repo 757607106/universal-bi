@@ -1,7 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from typing import List
+from typing import List, Optional
+from datetime import datetime
+import time
 
 from app.db.session import get_db, SessionLocal
 from app.api.deps import get_current_user, apply_ownership_filter
@@ -11,7 +13,7 @@ from app.schemas.dataset import (
     BusinessTermCreate, BusinessTermResponse,
     AnalyzeRelationshipsRequest, AnalyzeRelationshipsResponse,
     CreateViewRequest, TrainingLogResponse, TrainingDataResponse,
-    TrainQARequest, TrainDocRequest
+    TrainQARequest, TrainDocRequest, SuggestedQuestions
 )
 from app.services.vanna import (
     VannaInstanceManager,
@@ -20,6 +22,7 @@ from app.services.vanna import (
     VannaTrainingDataService,
     VannaAnalystService
 )
+from app.services.vanna.facade import VannaManager
 
 router = APIRouter()
 
@@ -1223,3 +1226,199 @@ def update_modeling_config(
         "modeling_config": dataset.modeling_config,
         "relationships_trained": False
     }
+
+
+@router.post("/upload_quick_analysis", response_model=DatasetResponse)
+async def upload_file_for_quick_analysis(
+    file: UploadFile = File(...),
+    name: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    上传 Excel/CSV 文件并自动创建数据集进行快速分析
+    
+    处理流程:
+    1. 读取文件为 DataFrame
+    2. 清洗列名以兼容 SQL
+    3. 将数据写入第一个可用数据源
+    4. 创建 Dataset 记录
+    5. 自动训练 DDL
+    
+    Args:
+        file: 上传的文件 (CSV/Excel)
+        name: 数据集名称（可选，默认为文件名）
+        db: 数据库会话
+        current_user: 当前用户
+    
+    Returns:
+        DatasetResponse: 新创建的数据集信息
+    """
+    import logging
+    from app.utils.file_handler import read_file_to_df, sanitize_column_names
+    from app.services.db_inspector import DBInspector
+    from app.services.vanna import VannaTrainingService
+    
+    logger = logging.getLogger(__name__)
+    
+    # 1. 读取文件为 DataFrame
+    logger.info(f"Reading uploaded file: {file.filename}")
+    df = read_file_to_df(file)
+    
+    # 2. 清洗列名
+    df = sanitize_column_names(df)
+    logger.info(f"Sanitized columns: {list(df.columns)}")
+    
+    # 3. 获取第一个可用的数据源（优先选择用户自己的）
+    datasource_query = db.query(DataSource)
+    datasource_query = apply_ownership_filter(datasource_query, DataSource, current_user)
+    datasource = datasource_query.first()
+    
+    if not datasource:
+        # 如果用户没有数据源，尝试获取系统默认数据源（owner_id 为 None）
+        datasource = db.query(DataSource).filter(DataSource.owner_id == None).first()
+    
+    if not datasource:
+        raise HTTPException(
+            status_code=400, 
+            detail="没有可用的数据源，请先创建一个数据库连接"
+        )
+    
+    # 4. 生成唯一表名
+    timestamp = int(time.time())
+    table_name = f"upload_{current_user.id}_{timestamp}"
+    logger.info(f"Generated table name: {table_name}")
+    
+    try:
+        # 5. 将 DataFrame 写入数据库
+        engine = DBInspector.get_engine(datasource)
+        df.to_sql(
+            name=table_name,
+            con=engine,
+            if_exists='replace',
+            index=False,
+            method='multi'  # 批量插入提高性能
+        )
+        logger.info(f"Successfully wrote {len(df)} rows to table {table_name}")
+        
+    except Exception as e:
+        logger.error(f"Failed to write data to database: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"数据写入数据库失败: {str(e)}"
+        )
+    
+    # 6. 创建 Dataset 记录
+    dataset_name = name or file.filename.rsplit('.', 1)[0]  # 默认使用文件名
+    
+    dataset = Dataset(
+        name=dataset_name,
+        datasource_id=datasource.id,
+        schema_config=[table_name],  # 自动配置表
+        status="pending",
+        owner_id=current_user.id
+    )
+    db.add(dataset)
+    db.commit()
+    db.refresh(dataset)
+    
+    # 自动生成 collection_name
+    dataset.collection_name = f"vec_ds_{dataset.id}"
+    db.commit()
+    db.refresh(dataset)
+    
+    logger.info(f"Created dataset {dataset.id} with table {table_name}")
+    
+    # 7. 自动训练 DDL（简易训练）
+    try:
+        logger.info(f"Starting quick training for dataset {dataset.id}")
+        
+        # 获取 DDL
+        ddl = DBInspector.get_table_ddl(datasource, table_name)
+        
+        # 使用 Legacy Vanna 训练 DDL
+        from app.services.vanna.instance_manager import VannaInstanceManager
+        vn = VannaInstanceManager.get_legacy_vanna(dataset.id)
+        vn.train(ddl=ddl)
+        
+        # 更新状态
+        dataset.status = "completed"
+        dataset.process_rate = 100
+        dataset.last_train_at = datetime.utcnow()
+        db.commit()
+        db.refresh(dataset)
+        
+        logger.info(f"Quick training completed for dataset {dataset.id}")
+        
+    except Exception as e:
+        logger.error(f"Training failed for dataset {dataset.id}: {e}")
+        dataset.status = "failed"
+        dataset.error_msg = str(e)
+        db.commit()
+        db.refresh(dataset)
+    
+    return dataset
+
+
+@router.get("/{id}/suggested_questions", response_model=SuggestedQuestions)
+async def get_suggested_questions(
+    id: int,
+    limit: int = 5,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    获取数据集的推荐问题（猜你想问）
+    
+    该功能根据数据集的表结构和关键字段，利用 LLM 生成用户最可能感兴趣的业务分析问题。
+    结果会缓存 24 小时，减少 LLM 调用成本。
+    
+    Args:
+        id: 数据集 ID
+        limit: 返回问题数量（默认 5）
+        db: 数据库会话
+        current_user: 当前用户
+    
+    Returns:
+        SuggestedQuestions: 包含问题列表的响应
+    """
+    # 验证 dataset 访问权限
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    # 缓存 Key
+    cache_key = f"suggested_questions:{id}:{limit}"
+    
+    try:
+        # 检查 Redis 缓存
+        from app.core.redis import redis_service
+        cached_questions = await redis_service.get(cache_key)
+        
+        if cached_questions:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"Returning cached suggested questions for dataset {id}")
+            return SuggestedQuestions(questions=cached_questions)
+        
+        # 生成推荐问题
+        questions = VannaManager.generate_suggested_questions(
+            dataset_id=id,
+            db_session=db,
+            limit=limit
+        )
+        
+        # 存入 Redis 缓存（24 小时过期）
+        cache_ttl = 86400  # 24 hours
+        await redis_service.set(cache_key, questions, expire=cache_ttl)
+        
+        return SuggestedQuestions(questions=questions)
+        
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to generate suggested questions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"生成推荐问题失败: {str(e)}")

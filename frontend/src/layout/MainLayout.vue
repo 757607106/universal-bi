@@ -26,11 +26,12 @@
             />
           </div>
 
-          <!-- 通知铃铛 -->
-          <button class="relative p-2 rounded-full text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors">
-            <el-icon class="w-5 h-5"><BellIcon /></el-icon>
-            <span class="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white dark:border-slate-900"></span>
-          </button>
+          <!-- 通知铃铛 (功能开发中) -->
+          <el-tooltip content="通知功能开发中" placement="bottom">
+            <button class="relative p-2 rounded-full text-gray-400 dark:text-slate-500 cursor-not-allowed opacity-50">
+              <el-icon class="w-5 h-5"><BellIcon /></el-icon>
+            </button>
+          </el-tooltip>
 
           <!-- 设置 -->
           <ThemeToggle />

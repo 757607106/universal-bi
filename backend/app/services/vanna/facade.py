@@ -149,3 +149,10 @@ class VannaManager:
     async def remove_training_data_async(cls, dataset_id: int, training_data_id: str) -> bool:
         """异步删除训练数据"""
         return await VannaTrainingDataService.remove_training_data_async(dataset_id, training_data_id)
+
+    # ========== 建议问题生成 ==========
+
+    @classmethod
+    def generate_suggested_questions(cls, dataset_id: int, db_session: Session, limit: int = 5) -> list[str]:
+        """生成建议问题"""
+        return VannaAnalystService.generate_suggested_questions(dataset_id, db_session, limit)
