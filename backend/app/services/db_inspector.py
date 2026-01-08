@@ -105,6 +105,64 @@ class DBInspector:
         return inspector.get_table_names()
 
     @classmethod
+    def get_column_names(cls, ds: DataSource, table_name: str) -> list:
+        """获取指定表的所有列名"""
+        engine = cls.get_engine(ds)
+        inspector = inspect(engine)
+        columns = inspector.get_columns(table_name)
+        return [col['name'] for col in columns]
+
+    @classmethod
+    def validate_table_and_columns(cls, ds: DataSource, table_name: str, column_names: list[str]) -> dict:
+        """
+        验证表名和列名是否存在于数据库中。
+
+        Returns:
+            dict: {
+                "valid": bool,
+                "table_exists": bool,
+                "missing_columns": list[str],
+                "error": str | None
+            }
+        """
+        result = {
+            "valid": True,
+            "table_exists": True,
+            "missing_columns": [],
+            "error": None
+        }
+
+        try:
+            engine = cls.get_engine(ds)
+            inspector = inspect(engine)
+
+            # 检查表是否存在
+            existing_tables = inspector.get_table_names()
+            if table_name not in existing_tables:
+                result["valid"] = False
+                result["table_exists"] = False
+                result["error"] = f"表 '{table_name}' 不存在"
+                return result
+
+            # 检查列是否存在
+            existing_columns = {col['name'] for col in inspector.get_columns(table_name)}
+            for col in column_names:
+                if col not in existing_columns:
+                    result["missing_columns"].append(col)
+
+            if result["missing_columns"]:
+                result["valid"] = False
+                result["error"] = f"表 '{table_name}' 缺少列: {', '.join(result['missing_columns'])}"
+
+            return result
+
+        except Exception as e:
+            logger.error(f"验证表和列时出错: {e}")
+            result["valid"] = False
+            result["error"] = str(e)
+            return result
+
+    @classmethod
     def get_table_ddl(cls, ds: DataSource, table_name: str) -> str:
         engine = cls.get_engine(ds)
         metadata = MetaData()

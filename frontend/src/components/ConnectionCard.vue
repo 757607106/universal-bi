@@ -5,7 +5,7 @@
     shadow="never"
   >
     <div class="absolute -inset-0.5 bg-gradient-to-r from-blue-500 to-purple-600 rounded-2xl opacity-0 group-hover:opacity-10 transition duration-500 blur"></div>
-    
+
     <div class="relative flex items-start justify-between mb-6">
       <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-500/10 dark:to-indigo-500/10 flex items-center justify-center group-hover:scale-110 transition-transform duration-300 shadow-sm border border-blue-100 dark:border-blue-500/20">
         <el-icon class="w-7 h-7 text-blue-600 dark:text-blue-400">
@@ -24,6 +24,12 @@
         </el-button>
         <template #dropdown>
           <el-dropdown-menu class="!rounded-xl !p-2">
+            <el-dropdown-item command="test" class="!rounded-lg !mb-1">
+              <el-icon><Connection /></el-icon> 测试连接
+            </el-dropdown-item>
+            <el-dropdown-item command="reconnect" class="!rounded-lg !mb-1">
+              <el-icon><Refresh /></el-icon> 重新连接
+            </el-dropdown-item>
             <el-dropdown-item command="edit" class="!rounded-lg !mb-1">
               <el-icon><Edit /></el-icon> 编辑
             </el-dropdown-item>
@@ -45,11 +51,11 @@
     <div class="flex items-center justify-between pt-4 border-t border-gray-100 dark:border-slate-700/50 transition-colors">
       <div class="flex items-center gap-2">
         <span class="relative flex h-2.5 w-2.5">
-          <span 
+          <span
             v-if="status === '已连接'"
             class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"
           ></span>
-          <span 
+          <span
             :class="`relative inline-flex rounded-full h-2.5 w-2.5 ${status === '已连接' ? 'bg-green-500' : 'bg-gray-400 dark:bg-slate-600'}`"
           ></span>
         </span>
@@ -61,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { DataAnalysis, More, Edit, Delete } from '@element-plus/icons-vue'
+import { DataAnalysis, More, Edit, Delete, Connection, Refresh } from '@element-plus/icons-vue'
 
 interface Props {
   name: string
@@ -73,6 +79,8 @@ interface Props {
 interface Emits {
   (e: 'edit'): void
   (e: 'delete'): void
+  (e: 'test'): void
+  (e: 'reconnect'): void
 }
 
 const props = defineProps<Props>()
@@ -83,6 +91,10 @@ const handleCommand = (command: string) => {
     emit('edit')
   } else if (command === 'delete') {
     emit('delete')
+  } else if (command === 'test') {
+    emit('test')
+  } else if (command === 'reconnect') {
+    emit('reconnect')
   }
 }
 </script>

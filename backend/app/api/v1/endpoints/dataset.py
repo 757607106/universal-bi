@@ -13,7 +13,13 @@ from app.schemas.dataset import (
     CreateViewRequest, TrainingLogResponse, TrainingDataResponse,
     TrainQARequest, TrainDocRequest
 )
-from app.services.vanna_manager import VannaManager
+from app.services.vanna import (
+    VannaInstanceManager,
+    VannaTrainingService,
+    VannaCacheService,
+    VannaTrainingDataService,
+    VannaAnalystService
+)
 
 router = APIRouter()
 
@@ -23,7 +29,7 @@ def run_training_task(dataset_id: int, table_names: list[str]):
     """
     db = SessionLocal()
     try:
-        VannaManager.train_dataset(dataset_id, table_names, db)
+        VannaTrainingService.train_dataset(dataset_id, table_names, db)
     finally:
         db.close()
 
@@ -205,7 +211,7 @@ def add_business_term(
     
     # Train the term in Vanna
     try:
-        VannaManager.train_term(
+        VannaTrainingService.train_term(
             dataset_id=id,
             term=term_in.term,
             definition=term_in.definition,
@@ -305,7 +311,7 @@ def train_qa_pair(
         raise HTTPException(status_code=403, detail="Cannot add training data to public resources")
     
     try:
-        VannaManager.train_qa(
+        VannaTrainingService.train_qa(
             dataset_id=id,
             question=qa_data.question,
             sql=qa_data.sql,
@@ -349,12 +355,12 @@ def train_documentation(
     
     try:
         # 获取 Legacy Vanna 实例并训练文档
-        vn = VannaManager.get_legacy_vanna(id)
+        vn = VannaInstanceManager.get_legacy_vanna(id)
         vn.train(documentation=doc_data.content)
-        
-        # 清理缓存
-        VannaManager.clear_cache(id)
-        
+
+        # 注意：缓存清理需要在异步上下文中处理
+        # VannaCacheService.clear_cache(id) 是异步方法
+
         return {
             "message": "文档训练成功",
             "content": doc_data.content[:100] + "..." if len(doc_data.content) > 100 else doc_data.content
@@ -406,7 +412,7 @@ def analyze_relationships(
         )
     
     try:
-        result = VannaManager.analyze_relationships(
+        result = VannaAnalystService.analyze_relationships(
             dataset_id=dataset.id,
             table_names=request.table_names,
             db_session=db
@@ -515,12 +521,12 @@ def _deduplicate_sql_columns(sql: str) -> str:
 def _train_relationships_from_edges(dataset_id: int, edges: list, db_session: Session):
     """
     从 VueFlow edges 解析表关系并训练到 Vanna。
-    
+
     Args:
         dataset_id: 数据集 ID
         edges: VueFlow edges 数据列表
         db_session: 数据库会话
-        
+
     VueFlow Edge 结构示例：
     {
         "id": "edge-1",
@@ -535,16 +541,67 @@ def _train_relationships_from_edges(dataset_id: int, edges: list, db_session: Se
             "targetField": "user_id"
         }
     }
+
+    Returns:
+        dict: {
+            "success": bool,
+            "trained_count": int,
+            "skipped_count": int,
+            "validation_errors": list[str]
+        }
     """
     import logging
+    from app.services.db_inspector import DBInspector
+
     logger = logging.getLogger(__name__)
-    
+
+    result = {
+        "success": True,
+        "trained_count": 0,
+        "skipped_count": 0,
+        "validation_errors": []
+    }
+
     if not edges or len(edges) == 0:
         logger.info(f"No edges to train for dataset {dataset_id}")
-        return
-    
+        return result
+
+    # 获取 dataset 和关联的 datasource 用于验证
+    dataset = db_session.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        result["success"] = False
+        result["validation_errors"].append(f"Dataset {dataset_id} not found")
+        return result
+
+    datasource = db_session.query(DataSource).filter(DataSource.id == dataset.datasource_id).first()
+    if not datasource:
+        result["success"] = False
+        result["validation_errors"].append(f"DataSource not found for dataset {dataset_id}")
+        return result
+
+    # 缓存已验证的表和列信息，避免重复查询
+    validated_tables = {}  # table_name -> set(column_names)
+
+    def validate_table_column(table_name: str, column_name: str) -> tuple[bool, str]:
+        """验证表和列是否存在，返回 (is_valid, error_message)"""
+        if table_name not in validated_tables:
+            try:
+                validation = DBInspector.validate_table_and_columns(datasource, table_name, [])
+                if not validation["table_exists"]:
+                    return False, f"表 '{table_name}' 在数据库中不存在"
+                # 获取所有列名并缓存
+                columns = DBInspector.get_column_names(datasource, table_name)
+                validated_tables[table_name] = set(columns)
+            except Exception as e:
+                return False, f"验证表 '{table_name}' 时出错: {str(e)}"
+
+        if column_name not in validated_tables[table_name]:
+            return False, f"列 '{column_name}' 在表 '{table_name}' 中不存在"
+
+        return True, ""
+
     relationships = []
-    
+
     for edge in edges:
         try:
             # 方法1：从 data 中获取表名和字段名（优先）
@@ -559,46 +616,182 @@ def _train_relationships_from_edges(dataset_id: int, edges: list, db_session: Se
                 # 假设节点 ID 格式为 "node-{table_name}"
                 source_node_id = edge.get('source', '')
                 target_node_id = edge.get('target', '')
-                
+
                 # 提取表名（移除 "node-" 前缀）
                 source_table = source_node_id.replace('node-', '') if source_node_id.startswith('node-') else source_node_id
                 target_table = target_node_id.replace('node-', '') if target_node_id.startswith('node-') else target_node_id
-                
+
                 # Handle 即为字段名
                 source_field = edge.get('sourceHandle', '')
                 target_field = edge.get('targetHandle', '')
-            
+
             # 验证必要字段
             if not all([source_table, target_table, source_field, target_field]):
-                logger.warning(f"Skipping edge with incomplete data: {edge.get('id', 'unknown')}")
+                error_msg = f"Edge {edge.get('id', 'unknown')}: 缺少必要的表名或字段名"
+                logger.warning(error_msg)
+                result["validation_errors"].append(error_msg)
+                result["skipped_count"] += 1
                 continue
-            
-            # 生成双向关系描述
-            # 正向关系
-            forward_desc = (
-                f"The table `{source_table}` can be joined with table `{target_table}` "
-                f"on the condition `{source_table}`.`{source_field}` = `{target_table}`.`{target_field}`."
-            )
-            relationships.append(forward_desc)
-            
-            # 反向关系（双向关联）
-            reverse_desc = (
-                f"The table `{target_table}` can be joined with table `{source_table}` "
-                f"on the condition `{target_table}`.`{target_field}` = `{source_table}`.`{source_field}`."
-            )
-            relationships.append(reverse_desc)
-            
-            logger.debug(f"Extracted relationship: {source_table}.{source_field} <-> {target_table}.{target_field}")
-            
+
+            # P0: 验证表和字段是否存在于数据库中
+            is_valid, error = validate_table_column(source_table, source_field)
+            if not is_valid:
+                error_msg = f"Edge {edge.get('id', 'unknown')}: {error}"
+                logger.warning(error_msg)
+                result["validation_errors"].append(error_msg)
+                result["skipped_count"] += 1
+                continue
+
+            is_valid, error = validate_table_column(target_table, target_field)
+            if not is_valid:
+                error_msg = f"Edge {edge.get('id', 'unknown')}: {error}"
+                logger.warning(error_msg)
+                result["validation_errors"].append(error_msg)
+                result["skipped_count"] += 1
+                continue
+
+            # 推断关系类型（基于字段命名约定）
+            is_fk_pattern = target_field.endswith('_id') or target_field == 'id'
+            cardinality = "Many-to-One" if is_fk_pattern else "One-to-One (inferred)"
+
+            # 生成增强版关系描述（单向，包含 SQL 示例和业务含义）
+            enhanced_desc = f"""## Table Relationship: {source_table} → {target_table}
+
+**Join Condition**: `{source_table}`.`{source_field}` = `{target_table}`.`{target_field}`
+
+**Relationship Type**: {cardinality}
+- The `{source_field}` column in `{source_table}` references `{target_field}` in `{target_table}`
+- When querying {source_table} data with related {target_table} information, use LEFT JOIN
+
+**Recommended SQL Pattern**:
+```sql
+SELECT s.*, t.*
+FROM {source_table} s
+LEFT JOIN {target_table} t ON s.{source_field} = t.{target_field}
+```
+
+**Business Context**: Each record in `{source_table}` is associated with one record in `{target_table}` through the `{source_field}` field."""
+
+            relationships.append(enhanced_desc)
+
+            logger.debug(f"Validated relationship: {source_table}.{source_field} <-> {target_table}.{target_field}")
+
         except Exception as e:
-            logger.warning(f"Failed to parse edge {edge.get('id', 'unknown')}: {e}")
+            error_msg = f"Edge {edge.get('id', 'unknown')}: 解析失败 - {str(e)}"
+            logger.warning(error_msg)
+            result["validation_errors"].append(error_msg)
+            result["skipped_count"] += 1
             continue
-    
+
     if len(relationships) > 0:
-        logger.info(f"Training {len(relationships)} relationship descriptions for dataset {dataset_id}")
-        VannaManager.train_relationships(dataset_id, relationships, db_session)
+        logger.info(f"Training {len(relationships)} validated relationship descriptions for dataset {dataset_id}")
+        VannaTrainingService.train_relationships(dataset_id, relationships, db_session)
+        result["trained_count"] = len(relationships)
     else:
         logger.info(f"No valid relationships extracted from {len(edges)} edges")
+
+    result["success"] = len(result["validation_errors"]) == 0
+    return result
+
+
+def _analyze_sql_performance(engine, sql: str, db_type: str) -> dict:
+    """
+    分析 SQL 性能，返回警告信息。
+
+    Args:
+        engine: SQLAlchemy 引擎
+        sql: 要分析的 SQL 语句
+        db_type: 数据库类型 ('mysql', 'postgresql')
+
+    Returns:
+        dict: {
+            "warnings": list[str],  # 警告信息列表
+            "estimated_rows": int,  # 预估行数
+            "has_full_scan": bool   # 是否有全表扫描
+        }
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    result = {
+        "warnings": [],
+        "estimated_rows": 0,
+        "has_full_scan": False
+    }
+
+    try:
+        with engine.connect() as conn:
+            if db_type == 'mysql':
+                # MySQL EXPLAIN
+                explain_result = conn.execute(text(f"EXPLAIN {sql}"))
+                rows = explain_result.fetchall()
+
+                for row in rows:
+                    # MySQL EXPLAIN 列: id, select_type, table, type, possible_keys, key, key_len, ref, rows, Extra
+                    row_dict = row._asdict() if hasattr(row, '_asdict') else dict(zip(explain_result.keys(), row))
+
+                    # 检测全表扫描
+                    scan_type = row_dict.get('type', '')
+                    if scan_type == 'ALL':
+                        result["has_full_scan"] = True
+                        table_name = row_dict.get('table', 'unknown')
+                        result["warnings"].append(f"表 {table_name} 将执行全表扫描")
+
+                    # 累计预估行数
+                    rows_count = row_dict.get('rows', 0)
+                    if rows_count:
+                        result["estimated_rows"] += int(rows_count)
+
+                    # 检测临时表使用
+                    extra = row_dict.get('Extra', '') or ''
+                    if 'Using temporary' in extra:
+                        result["warnings"].append("查询将使用临时表")
+                    if 'Using filesort' in extra:
+                        result["warnings"].append("查询将使用文件排序")
+
+            elif db_type == 'postgresql':
+                # PostgreSQL EXPLAIN (不使用 ANALYZE 避免实际执行)
+                explain_result = conn.execute(text(f"EXPLAIN (FORMAT JSON) {sql}"))
+                explain_json = explain_result.fetchone()[0]
+
+                if explain_json and len(explain_json) > 0:
+                    plan = explain_json[0].get('Plan', {})
+
+                    # 提取预估行数
+                    result["estimated_rows"] = int(plan.get('Plan Rows', 0))
+
+                    # 检测全表扫描
+                    node_type = plan.get('Node Type', '')
+                    if node_type == 'Seq Scan':
+                        result["has_full_scan"] = True
+                        relation = plan.get('Relation Name', 'unknown')
+                        result["warnings"].append(f"表 {relation} 将执行顺序扫描 (Seq Scan)")
+
+                    # 递归检查子计划
+                    def check_plans(node):
+                        if isinstance(node, dict):
+                            if node.get('Node Type') == 'Seq Scan':
+                                relation = node.get('Relation Name', 'unknown')
+                                if f"表 {relation} 将执行顺序扫描" not in str(result["warnings"]):
+                                    result["warnings"].append(f"表 {relation} 将执行顺序扫描 (Seq Scan)")
+                                    result["has_full_scan"] = True
+                            for child in node.get('Plans', []):
+                                check_plans(child)
+
+                    check_plans(plan)
+
+        # 添加行数警告
+        if result["estimated_rows"] > 100000:
+            result["warnings"].append(f"预估结果行数较大 ({result['estimated_rows']:,} 行)，查询可能较慢")
+        elif result["estimated_rows"] > 1000000:
+            result["warnings"].append(f"预估结果行数非常大 ({result['estimated_rows']:,} 行)，强烈建议添加索引")
+
+    except Exception as e:
+        logger.warning(f"SQL 性能分析失败: {e}")
+        # 分析失败不阻止视图创建，只记录警告
+        result["warnings"].append(f"性能分析跳过: {str(e)}")
+
+    return result
 
 
 @router.post("/create_view")
@@ -637,17 +830,22 @@ def create_view(
         from app.services.db_inspector import DBInspector
         import logging
         logger = logging.getLogger(__name__)
-        
+
         logger.info(f"Creating view: {request.view_name}")
         logger.info(f"Datasource ID: {request.datasource_id}")
         logger.info(f"Original SQL: {request.sql[:200]}...")
-        
+
         # 自动处理重复列名问题
         processed_sql = _deduplicate_sql_columns(request.sql)
         logger.info(f"Processed SQL: {processed_sql[:200]}...")
-        
+
         engine = DBInspector.get_engine(datasource)
-        
+
+        # 性能预检：分析 SQL 执行计划
+        perf_analysis = _analyze_sql_performance(engine, processed_sql, datasource.type)
+        if perf_analysis["warnings"]:
+            logger.warning(f"SQL 性能警告: {perf_analysis['warnings']}")
+
         # Create or replace view
         # Note: Syntax varies by database type
         if datasource.type == 'postgresql':
@@ -656,7 +854,7 @@ def create_view(
             # MySQL requires dropping the view first if it exists
             drop_view_sql = f"DROP VIEW IF EXISTS {request.view_name}"
             create_view_sql = f"CREATE VIEW {request.view_name} AS {processed_sql}"
-            
+
             logger.info(f"Executing DROP VIEW: {drop_view_sql}")
             with engine.connect() as conn:
                 conn.execute(text(drop_view_sql))
@@ -673,11 +871,23 @@ def create_view(
             conn.commit()
         
         logger.info(f"View {request.view_name} created successfully")
-        
-        return {
+
+        # 构建响应，包含性能警告信息
+        response = {
             "message": f"视图 {request.view_name} 创建成功",
-            "view_name": request.view_name
+            "view_name": request.view_name,
+            "performance": {
+                "warnings": perf_analysis.get("warnings", []),
+                "estimated_rows": perf_analysis.get("estimated_rows", 0),
+                "has_full_scan": perf_analysis.get("has_full_scan", False)
+            }
         }
+
+        # 如果有警告，在消息中提示
+        if perf_analysis.get("warnings"):
+            response["message"] += "（有性能警告，请查看详情）"
+
+        return response
         
     except Exception as e:
         import logging
@@ -773,8 +983,8 @@ def get_training_data(
         raise HTTPException(status_code=404, detail="Dataset not found or access denied")
     
     try:
-        # 调用 VannaManager 获取训练数据
-        result = VannaManager.get_training_data(id, page, page_size, type_filter)
+        # 调用 VannaTrainingDataService 获取训练数据
+        result = VannaTrainingDataService.get_training_data(id, page, page_size, type_filter)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -811,6 +1021,40 @@ def pause_training(
     return {"message": "训练暂停请求已发送"}
 
 
+@router.delete("/{id}/training/data/{training_data_id}")
+def remove_single_training_data(
+    id: int,
+    training_data_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    删除单条训练数据（DDL、文档或 QA 对）
+
+    Args:
+        id: 数据集 ID
+        training_data_id: 训练数据 ID
+    """
+    # 验证 dataset 访问权限
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+
+    # 额外检查：公共资源只有超级管理员可以删除
+    if dataset.owner_id is None and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Cannot delete training data from public resources")
+
+    success = VannaTrainingDataService.remove_training_data(id, training_data_id)
+
+    if success:
+        return {"message": "训练数据已删除", "id": training_data_id}
+    else:
+        raise HTTPException(status_code=404, detail="训练数据不存在或格式不正确")
+
+
 @router.delete("/{id}/training")
 def delete_training_data(
     id: int,
@@ -831,9 +1075,9 @@ def delete_training_data(
     if dataset.owner_id is None and not current_user.is_superuser:
         raise HTTPException(status_code=403, detail="Cannot delete training data for public resources")
     
-    # 调用 VannaManager 删除 collection
-    success = VannaManager.delete_collection(id)
-    
+    # 调用 VannaInstanceManager 删除 collection
+    success = VannaInstanceManager.delete_collection(id)
+
     if success:
         return {"message": "训练数据已清理"}
     else:
@@ -862,7 +1106,7 @@ def delete_dataset(
     
     # 1. 删除 Vanna Collection (训练数据)
     try:
-        VannaManager.delete_collection(id)
+        VannaInstanceManager.delete_collection(id)
     except Exception as e:
         # 记录日志但继续删除
         import logging
@@ -933,14 +1177,37 @@ def update_modeling_config(
     if train_relationships and new_edges and len(new_edges) > 0:
         try:
             logger.info(f"Training relationships from {len(new_edges)} edges for dataset {id}")
-            _train_relationships_from_edges(id, new_edges, db)
-            
-            return {
-                "message": "建模配置已保存，表关系已训练",
-                "modeling_config": dataset.modeling_config,
-                "relationships_trained": True,
-                "edges_count": len(new_edges)
-            }
+            train_result = _train_relationships_from_edges(id, new_edges, db)
+
+            # 根据验证结果构建响应
+            if train_result["success"]:
+                return {
+                    "message": f"建模配置已保存，{train_result['trained_count']} 个表关系已训练",
+                    "modeling_config": dataset.modeling_config,
+                    "relationships_trained": True,
+                    "trained_count": train_result["trained_count"],
+                    "edges_count": len(new_edges)
+                }
+            elif train_result["trained_count"] > 0:
+                # 部分成功
+                return {
+                    "message": f"建模配置已保存，{train_result['trained_count']} 个表关系已训练，{train_result['skipped_count']} 个跳过",
+                    "modeling_config": dataset.modeling_config,
+                    "relationships_trained": True,
+                    "trained_count": train_result["trained_count"],
+                    "skipped_count": train_result["skipped_count"],
+                    "validation_errors": train_result["validation_errors"],
+                    "edges_count": len(new_edges)
+                }
+            else:
+                # 全部验证失败
+                return {
+                    "message": "建模配置已保存，但所有表关系验证失败",
+                    "modeling_config": dataset.modeling_config,
+                    "relationships_trained": False,
+                    "skipped_count": train_result["skipped_count"],
+                    "validation_errors": train_result["validation_errors"]
+                }
         except Exception as e:
             logger.error(f"Failed to train relationships: {e}", exc_info=True)
             # 训练失败不影响保存逻辑

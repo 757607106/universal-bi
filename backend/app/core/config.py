@@ -4,16 +4,27 @@ from typing import Optional
 
 class Settings(BaseSettings):
     """应用配置类 - 所有配置项统一从.env文件读取"""
-    
+
     # ========== 应用基础配置 ==========
     PROJECT_NAME: str = "Universal BI"
     API_V1_STR: str = "/api/v1"
     DEV: bool = True  # 开发环境标志，True=开发环境（彩色日志），False=生产环境（JSON日志）
-    
+
     # ========== JWT安全配置 ==========
     SECRET_KEY: str = "change_this_to_a_secure_random_key_in_production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+
+    # ========== CORS配置 ==========
+    # 允许的跨域来源，多个用逗号分隔，"*" 表示允许所有（仅开发环境）
+    CORS_ORIGINS: str = "*"
+
+    @property
+    def cors_origins_list(self) -> list:
+        """解析 CORS_ORIGINS 为列表"""
+        if self.CORS_ORIGINS == "*":
+            return ["*"]
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
     
     # ========== 主数据库配置 ==========
     # 支持MySQL/PostgreSQL/SQLite，默认使用MySQL
@@ -31,16 +42,26 @@ class Settings(BaseSettings):
     
     # ========== 向量数据库配置 (PGVector) ==========
     # 用于Vanna训练数据存储
+    VECTOR_STORE_TYPE: str = "chromadb"  # 可选: "pgvector", "chromadb"
     VN_PG_HOST: str = "localhost"
     VN_PG_PORT: int = 5432
     VN_PG_DB: str = "universal_bi_vector"
     VN_PG_USER: str = "postgres"
     VN_PG_PASSWORD: str = "postgres"
+
+    @property
+    def VN_PG_CONNECTION_STRING(self) -> str:
+        """生成 PGVector 连接字符串"""
+        return f"postgresql://{self.VN_PG_USER}:{self.VN_PG_PASSWORD}@{self.VN_PG_HOST}:{self.VN_PG_PORT}/{self.VN_PG_DB}"
     
     # ========== ChromaDB配置 ==========
     # 用于Vanna向量存储和检索
     CHROMA_PERSIST_DIR: str = "./chroma_db"  # ChromaDB持久化目录
     CHROMA_N_RESULTS: int = 10  # 向量检索返回结果数量
+
+    # ========== Vanna API模式配置 ==========
+    # 控制使用 Legacy API 还是 Agent API
+    VANNA_API_MODE: str = "legacy"  # 可选: "legacy", "agent"
 
     class Config:
         case_sensitive = True

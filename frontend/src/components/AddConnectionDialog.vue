@@ -62,7 +62,8 @@
         <el-input
           v-model="formData.password"
           type="password"
-          placeholder="••••••••"
+          :placeholder="editData ? '留空表示不修改密码' : '请输入密码'"
+          show-password
           class="dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 dark:placeholder-gray-500"
         />
       </el-form-item>
@@ -99,7 +100,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { testConnection, addDataSource, type DataSourceForm } from '../api/datasource'
+import { testConnection, addDataSource, updateDataSource, type DataSourceForm } from '../api/datasource'
 
 interface Props {
   modelValue: boolean
@@ -131,13 +132,19 @@ const formData = ref<DataSourceForm>({
   password: '',
 })
 
+// 编辑模式下，密码可以为空（表示不修改）
 const isFormValid = computed(() => {
-  return formData.value.name && 
-         formData.value.host && 
-         formData.value.port && 
-         formData.value.database_name && 
-         formData.value.username && 
-         formData.value.password
+  const baseValid = formData.value.name &&
+         formData.value.host &&
+         formData.value.port &&
+         formData.value.database_name &&
+         formData.value.username
+
+  // 新建时必须填密码，编辑时密码可选
+  if (props.editData) {
+    return baseValid
+  }
+  return baseValid && formData.value.password
 })
 
 // 同步 v-model
@@ -160,7 +167,7 @@ watch([() => props.editData, dialogVisible], async ([editData, visible]) => {
       type: editData.type || 'postgresql',
       host: editData.host || '',
       port: Number(editData.port) || 5432,
-      database_name: editData.database || '', // 注意：后端模型字段是 database_name，前端显示可能需要适配
+      database_name: editData.database_name || editData.database || '',
       username: editData.username || '',
       password: '', // 编辑时不回显密码
     }
@@ -178,6 +185,12 @@ watch([() => props.editData, dialogVisible], async ([editData, visible]) => {
 }, { immediate: true })
 
 const handleTestConnection = async () => {
+  // 编辑模式下如果没填密码，不能测试
+  if (props.editData && !formData.value.password) {
+    ElMessage.warning('请输入密码以测试连接')
+    return
+  }
+
   testingConnection.value = true
   try {
     const success = await testConnection(formData.value)
@@ -197,16 +210,23 @@ const handleTestConnection = async () => {
 }
 
 const handleSave = async () => {
-  if (!connectionTested.value) {
-    // 如果还没测试，先自动测试
+  // 新建模式：必须先测试连接
+  if (!props.editData && !connectionTested.value) {
     await handleTestConnection()
     if (!connectionTested.value) return
   }
-  
+
   saving.value = true
   try {
-    await addDataSource(formData.value)
-    ElMessage.success('保存成功')
+    if (props.editData) {
+      // 编辑模式：调用更新 API
+      await updateDataSource(props.editData.id, formData.value)
+      ElMessage.success('更新成功')
+    } else {
+      // 新建模式：调用创建 API
+      await addDataSource(formData.value)
+      ElMessage.success('保存成功')
+    }
     emit('save', formData.value)
     handleClose()
   } catch (error: any) {

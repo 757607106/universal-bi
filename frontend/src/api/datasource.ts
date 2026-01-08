@@ -25,12 +25,23 @@ export interface TableInfo {
   }[]
 }
 
+export interface ConnectionTestResult {
+  success: boolean
+  message: string
+  error?: string
+  error_type?: 'password_decrypt_failed' | 'access_denied' | 'connection_refused' | 'unknown_database' | 'connection_failed' | 'connection_error'
+}
+
 export const testConnection = async (data: DataSourceForm) => {
   return await http.post<boolean, DataSourceForm>('/datasources/test', data)
 }
 
 export const addDataSource = async (data: DataSourceForm) => {
   return await http.post<DataSource, DataSourceForm>('/datasources/', data)
+}
+
+export const updateDataSource = async (id: number, data: DataSourceForm) => {
+  return await http.put<DataSource, DataSourceForm>(`/datasources/${id}`, data)
 }
 
 export const getDataSourceList = async () => {
@@ -47,4 +58,18 @@ export const getTables = async (id: number) => {
 
 export const previewTable = async (id: number, tableName: string) => {
   return await http.get<{ columns: { prop: string, label: string }[], rows: any[] }, any>(`/datasources/${id}/tables/${tableName}/preview`)
+}
+
+/**
+ * 测试现有数据源的连接
+ */
+export const testExistingConnection = async (id: number) => {
+  return await http.post<ConnectionTestResult, any>(`/datasources/${id}/test-connection`)
+}
+
+/**
+ * 重新连接数据源（更新密码）
+ */
+export const reconnectDataSource = async (id: number, password: string) => {
+  return await http.post<DataSource, { password: string }>(`/datasources/${id}/reconnect`, { password })
 }

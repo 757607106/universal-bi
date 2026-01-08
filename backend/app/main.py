@@ -1,5 +1,6 @@
 import time
 import uuid
+import warnings
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,34 @@ from app.core.logger import setup_logging, get_logger
 from app.core.redis import redis_service
 from app.db.session import engine
 from app.models import metadata
+
+# === 安全检查 ===
+DEFAULT_SECRET_KEY = "change_this_to_a_secure_random_key_in_production"
+
+def _check_security_config():
+    """检查安全配置，在开发环境警告，生产环境拒绝启动"""
+    issues = []
+
+    # 检查 JWT Secret Key
+    if settings.SECRET_KEY == DEFAULT_SECRET_KEY:
+        msg = "JWT SECRET_KEY is using default value! This is a security risk."
+        if not settings.DEV:
+            raise RuntimeError(f"SECURITY ERROR: {msg} Please set a strong random SECRET_KEY in .env file.")
+        issues.append(msg)
+
+    if len(settings.SECRET_KEY) < 32:
+        msg = f"JWT SECRET_KEY is too short ({len(settings.SECRET_KEY)} chars). Recommended minimum is 32 characters."
+        if not settings.DEV:
+            raise RuntimeError(f"SECURITY ERROR: {msg}")
+        issues.append(msg)
+
+    # 在开发环境打印警告
+    if issues:
+        for issue in issues:
+            warnings.warn(f"SECURITY WARNING: {issue}", UserWarning, stacklevel=2)
+
+# 执行安全检查
+_check_security_config()
 
 # Create tables
 metadata.Base.metadata.create_all(bind=engine)
@@ -105,10 +134,20 @@ async def logging_middleware(request: Request, call_next):
         )
         raise
 
-# Set all CORS enabled origins
+# Set CORS origins from configuration
+# 在生产环境中，如果配置了 "*" 则发出警告
+cors_origins = settings.cors_origins_list
+if not settings.DEV and "*" in cors_origins:
+    warnings.warn(
+        "SECURITY WARNING: CORS_ORIGINS is set to '*' in production mode. "
+        "This allows any website to make requests to your API. "
+        "Please configure specific origins in .env: CORS_ORIGINS=https://yourdomain.com",
+        UserWarning, stacklevel=1
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

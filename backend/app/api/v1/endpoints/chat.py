@@ -1,13 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session, selectinload
 import pandas as pd
+import json
+import uuid
 
 from app.db.session import get_db
 from app.api.deps import get_current_user, apply_ownership_filter
 from app.models.metadata import User, Dataset
 from app.schemas.chat import ChatRequest, ChatResponse, FeedbackRequest, FeedbackResponse, SummaryRequest, SummaryResponse
-from app.services.vanna_manager import VannaManager
+from app.services.vanna import VannaSqlGenerator, VannaAnalystService, VannaTrainingService
+from app.services.vanna_manager import VannaAgentManager
 from app.core.logger import get_logger
+from app.core.config import settings
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -46,7 +51,7 @@ async def chat(
         raise HTTPException(status_code=404, detail="Dataset not found or access denied")
     
     try:
-        result = await VannaManager.generate_result(
+        result = await VannaSqlGenerator.generate_result(
             dataset_id=request.dataset_id,
             question=request.question,
             db_session=db,
@@ -80,7 +85,9 @@ async def chat(
             error_type=type(e).__name__,
             exc_info=True
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        # 生产环境不暴露详细错误信息
+        error_detail = str(e) if settings.DEV else "处理请求时发生内部错误，请稍后重试"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @router.post("/feedback", response_model=FeedbackResponse)
 async def submit_feedback(
@@ -126,7 +133,7 @@ async def submit_feedback(
         # Only train on positive feedback or corrected SQL
         if request.rating == 1:
             # User likes this result - train with original SQL
-            VannaManager.train_qa(
+            VannaTrainingService.train_qa(
                 dataset_id=request.dataset_id,
                 question=request.question,
                 sql=request.sql,
@@ -144,7 +151,7 @@ async def submit_feedback(
         elif request.rating == -1:
             # User dislikes result and provided corrected SQL
             # The 'sql' field contains the corrected SQL in this case
-            VannaManager.train_qa(
+            VannaTrainingService.train_qa(
                 dataset_id=request.dataset_id,
                 question=request.question,
                 sql=request.sql,  # This is the corrected SQL from user
@@ -187,7 +194,9 @@ async def submit_feedback(
             error_type=type(e).__name__,
             exc_info=True
         )
-        raise HTTPException(status_code=500, detail=f"反馈提交失败: {str(e)}")
+        # 生产环境不暴露详细错误信息
+        error_detail = f"反馈提交失败: {str(e)}" if settings.DEV else "反馈提交失败，请稍后重试"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @router.post("/summary", response_model=SummaryResponse)
 async def generate_summary(
@@ -221,7 +230,7 @@ async def generate_summary(
         df = pd.DataFrame(request.rows)
         
         # Generate summary
-        summary = VannaManager.generate_summary(
+        summary = VannaAnalystService.generate_summary(
             question=request.question,
             df=df,
             dataset_id=request.dataset_id
@@ -231,4 +240,184 @@ async def generate_summary(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"总结生成失败: {str(e)}")
+        # 生产环境不暴露详细错误信息
+        error_detail = f"总结生成失败: {str(e)}" if settings.DEV else "总结生成失败，请稍后重试"
+        raise HTTPException(status_code=500, detail=error_detail)
+
+
+# =============================================================================
+# Vanna 2.0 Agent API 端点 (新增)
+# =============================================================================
+
+@router.post("/agent")
+async def agent_chat(
+    request: ChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    使用 Vanna 2.0 Agent 进行对话式查询（流式响应）
+
+    与 `/chat` 端点的区别：
+    - 使用 Agent API 而非 Legacy API
+    - 支持流式响应 (Server-Sent Events)
+    - 工具调用机制 (SQL 生成 + SQL 执行)
+    - 更丰富的上下文增强
+
+    Response Content-Type: application/x-ndjson (Newline Delimited JSON)
+
+    每行是一个 JSON 对象，格式如下：
+    {"type": "ComponentType", "data": {...}}
+    """
+    # 记录请求
+    logger.info(
+        "Agent chat request received",
+        user_id=current_user.id,
+        user_email=current_user.email,
+        dataset_id=request.dataset_id,
+        question_length=len(request.question)
+    )
+
+    # 验证 Dataset 访问权限（带 datasource eager loading）
+    ds_query = db.query(Dataset).options(
+        selectinload(Dataset.datasource)
+    ).filter(Dataset.id == request.dataset_id)
+    ds_query = apply_ownership_filter(ds_query, Dataset, current_user)
+    dataset = ds_query.first()
+
+    if not dataset:
+        logger.warning(
+            "Dataset access denied",
+            user_id=current_user.id,
+            dataset_id=request.dataset_id,
+            reason="not found or access denied"
+        )
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+
+    if not dataset.datasource:
+        raise HTTPException(status_code=400, detail="Dataset has no datasource configured")
+
+    async def generate_stream():
+        """生成流式响应"""
+        try:
+            async for component in VannaAgentManager.chat(
+                dataset_id=request.dataset_id,
+                question=request.question,
+                user_id=str(current_user.id),
+                datasource=dataset.datasource,
+                conversation_id=request.conversation_id if hasattr(request, 'conversation_id') else None
+            ):
+                # 序列化组件
+                component_data = {
+                    "type": component.__class__.__name__
+                }
+
+                # 提取组件属性
+                if hasattr(component, 'text'):
+                    component_data["text"] = component.text
+                if hasattr(component, 'content'):
+                    component_data["content"] = component.content
+                if hasattr(component, 'markdown'):
+                    component_data["markdown"] = component.markdown
+                if hasattr(component, 'metadata'):
+                    component_data["metadata"] = component.metadata
+                if hasattr(component, 'to_dict'):
+                    try:
+                        component_data["data"] = component.to_dict()
+                    except:
+                        pass
+
+                # 输出 NDJSON 格式
+                yield json.dumps(component_data, ensure_ascii=False) + "\n"
+
+        except Exception as e:
+            logger.error(
+                "Agent chat stream failed",
+                user_id=current_user.id,
+                dataset_id=request.dataset_id,
+                error=str(e),
+                error_type=type(e).__name__,
+                exc_info=True
+            )
+            # 输出错误消息（流式响应中不区分环境，因为已经在返回数据）
+            error_text = str(e)[:100] if settings.DEV else "处理请求时发生错误"
+            error_component = {
+                "type": "Error",
+                "text": f"处理请求时发生错误: {error_text}",
+                "error": True
+            }
+            yield json.dumps(error_component, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # 禁用 Nginx 缓冲
+        }
+    )
+
+
+@router.post("/agent/simple")
+async def agent_chat_simple(
+    request: ChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    使用 Vanna 2.0 Agent 进行对话式查询（非流式，返回完整响应）
+
+    适用于不需要流式响应的场景，返回结构与 `/chat` 类似。
+    """
+    # 记录请求
+    logger.info(
+        "Agent chat simple request received",
+        user_id=current_user.id,
+        dataset_id=request.dataset_id,
+        question_length=len(request.question)
+    )
+
+    # 验证 Dataset 访问权限
+    ds_query = db.query(Dataset).options(
+        selectinload(Dataset.datasource)
+    ).filter(Dataset.id == request.dataset_id)
+    ds_query = apply_ownership_filter(ds_query, Dataset, current_user)
+    dataset = ds_query.first()
+
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+
+    if not dataset.datasource:
+        raise HTTPException(status_code=400, detail="Dataset has no datasource configured")
+
+    try:
+        result = await VannaAgentManager.chat_simple(
+            dataset_id=request.dataset_id,
+            question=request.question,
+            user_id=str(current_user.id),
+            datasource=dataset.datasource,
+            conversation_id=request.conversation_id if hasattr(request, 'conversation_id') else None
+        )
+
+        logger.info(
+            "Agent chat simple completed",
+            user_id=current_user.id,
+            dataset_id=request.dataset_id,
+            component_count=len(result.get('components', []))
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            "Agent chat simple failed",
+            user_id=current_user.id,
+            dataset_id=request.dataset_id,
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True
+        )
+        # 生产环境不暴露详细错误信息
+        error_detail = f"Agent 查询失败: {str(e)}" if settings.DEV else "Agent 查询失败，请稍后重试"
+        raise HTTPException(status_code=500, detail=error_detail)

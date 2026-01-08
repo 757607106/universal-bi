@@ -243,6 +243,9 @@
               <div class="bg-gray-900 dark:bg-slate-950 rounded-lg p-3 max-h-96 overflow-y-auto">
                 <pre class="text-xs text-green-400 font-mono whitespace-pre-wrap break-words">{{ generatedSQL }}</pre>
               </div>
+              <div class="text-xs text-gray-400 dark:text-slate-500 mt-2 italic">
+                * 创建视图时，重复列名会自动添加表别名前缀
+              </div>
             </div>
           </div>
           
@@ -1152,17 +1155,17 @@ const handleAutoAnalyze = async () => {
   }
 }
 
-// 生成 SQL 预览 - 明确列出字段并去重
+// 生成 SQL 预览 - 简化版本，后端会统一处理列名去重
 const generateSQL = () => {
   if (nodes.value.length === 0) {
     generatedSQL.value = ''
     return
   }
-  
+
   // 为每个表创建别名映射
   const tableAliases = new Map<string, string>()
   const usedAliases = new Set<string>()
-  
+
   nodes.value.forEach(node => {
     const tableName = node.data.tableName
     // 生成别名：去除前缀后取首字母，确保唯一
@@ -1171,7 +1174,7 @@ const generateSQL = () => {
       .map((part: string) => part[0])
       .join('')
       .toLowerCase()
-    
+
     // 如果别名已存在，添加数字后缀
     let finalAlias = alias
     let counter = 1
@@ -1179,11 +1182,11 @@ const generateSQL = () => {
       finalAlias = `${alias}${counter}`
       counter++
     }
-    
+
     usedAliases.add(finalAlias)
     tableAliases.set(tableName, finalAlias)
   })
-  
+
   // 如果没有连线，只显示第一个表的所有字段
   if (edges.value.length === 0) {
     const firstNode = nodes.value[0]
@@ -1193,34 +1196,34 @@ const generateSQL = () => {
     generatedSQL.value = `SELECT \n  ${fields}\nFROM ${firstTable} ${firstAlias}\nLIMIT 100;`
     return
   }
-  
-  // ========== 关键修复：先构建 JOIN 子句，确定哪些表会被包含 ==========
+
+  // ========== 构建 JOIN 子句，确定哪些表会被包含 ==========
   const firstNode = nodes.value[0]
   const firstTable = firstNode.data.tableName
   const firstAlias = tableAliases.get(firstTable)!
-  
+
   // 已处理的表（会出现在 FROM/JOIN 子句中的表）
   const processedTables = new Set([firstTable])
   const pendingEdges = [...edges.value]
   const joinClauses: string[] = []
-  
+
   // 循环处理所有 edge
   let maxIterations = pendingEdges.length * 2
   let iterations = 0
-  
+
   while (pendingEdges.length > 0 && iterations < maxIterations) {
     iterations++
     let progressMade = false
-    
+
     for (let i = pendingEdges.length - 1; i >= 0; i--) {
       const edge = pendingEdges[i]
       const sourceTable = getNodeLabel(edge.source)
       const targetTable = getNodeLabel(edge.target)
-      
+
       let joinTable = ''
       let joinTableAlias = ''
       let joinCondition = ''
-      
+
       if (processedTables.has(sourceTable) && !processedTables.has(targetTable)) {
         joinTable = targetTable
         joinTableAlias = tableAliases.get(targetTable)!
@@ -1244,14 +1247,14 @@ const generateSQL = () => {
         // 两个表都未处理，暂时跳过
         continue
       }
-      
+
       if (joinTable && joinCondition) {
         const joinType = edge.data?.type === 'inner' ? 'INNER JOIN' : 'LEFT JOIN'
         joinClauses.push(`${joinType} ${joinTable} ${joinTableAlias} ON ${joinCondition}`)
         pendingEdges.splice(i, 1)
       }
     }
-    
+
     if (!progressMade) {
       console.warn('SQL generation stalled. Remaining edges:', pendingEdges)
       // 如果有未处理的边且无法继续，说明存在孤立的子图
@@ -1262,56 +1265,31 @@ const generateSQL = () => {
       break
     }
   }
-  
-  // ========== 只为已处理的表生成字段列表 ==========
+
+  // ========== 简化版：使用 SELECT * 让后端处理列名去重 ==========
+  // 生成所有已处理表的字段列表（不做去重，交给后端处理）
   const allFields: string[] = []
-  const seenColumns = new Set<string>()
-  const columnCounts = new Map<string, number>()
-  
-  // 第一遍：只统计已处理表的列名出现次数
+
   nodes.value.forEach(node => {
     const tableName = node.data.tableName
     if (!processedTables.has(tableName)) {
       return  // 跳过未连接的表
     }
-    node.data.fields.forEach((field: any) => {
-      columnCounts.set(field.name, (columnCounts.get(field.name) || 0) + 1)
-    })
-  })
-  
-  // 第二遍：只为已处理的表生成字段
-  nodes.value.forEach(node => {
-    const tableName = node.data.tableName
-    if (!processedTables.has(tableName)) {
-      return  // 跳过未连接的表
-    }
-    
+
     const alias = tableAliases.get(tableName)!
-    
     node.data.fields.forEach((field: any) => {
-      const fullField = `${alias}.${field.name}`
-      if (seenColumns.has(fullField)) {
-        return
-      }
-      seenColumns.add(fullField)
-      
-      // 如果列名在多个表中出现，添加表别名前缀
-      if (columnCounts.get(field.name)! > 1) {
-        allFields.push(`${fullField} AS ${alias}_${field.name}`)
-      } else {
-        allFields.push(fullField)
-      }
+      allFields.push(`${alias}.${field.name}`)
     })
   })
-  
+
   // 构建最终 SQL
   const selectClause = allFields.join(',\n  ')
   let sql = `SELECT \n  ${selectClause}\nFROM ${firstTable} ${firstAlias}`
-  
+
   if (joinClauses.length > 0) {
     sql += '\n' + joinClauses.join('\n')
   }
-  
+
   generatedSQL.value = sql
 }
 

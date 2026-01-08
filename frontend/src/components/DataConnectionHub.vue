@@ -37,6 +37,8 @@
           v-bind="conn"
           @edit="handleEdit(conn)"
           @delete="handleDeleteClick(conn.id)"
+          @test="handleTestConnection(conn)"
+          @reconnect="handleReconnectClick(conn)"
           @click="handleCardClick(conn.id)"
           class="h-full cursor-pointer"
         />
@@ -64,7 +66,40 @@
     <DataPreviewDrawer
       v-model="previewDrawerOpen"
       :datasource-id="previewDataSourceId"
+      @reconnect="handleReconnectFromDrawer"
     />
+
+    <!-- 重新连接对话框 -->
+    <el-dialog
+      v-model="reconnectDialogOpen"
+      title="重新连接"
+      width="400px"
+      class="!rounded-xl"
+    >
+      <div class="mb-4">
+        <p class="text-gray-600 dark:text-gray-400 mb-4">
+          请输入 <span class="font-semibold text-gray-900 dark:text-gray-100">{{ reconnectingConnection?.name }}</span> 的数据库密码
+        </p>
+        <el-input
+          v-model="reconnectPassword"
+          type="password"
+          placeholder="请输入密码"
+          show-password
+          @keyup.enter="handleReconnectConfirm"
+        />
+      </div>
+      <template #footer>
+        <el-button @click="reconnectDialogOpen = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="reconnecting"
+          :disabled="!reconnectPassword"
+          @click="handleReconnectConfirm"
+        >
+          确认连接
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -76,7 +111,13 @@ import ConnectionCard from './ConnectionCard.vue'
 import AddConnectionDialog from './AddConnectionDialog.vue'
 import DeleteConfirmDialog from './DeleteConfirmDialog.vue'
 import DataPreviewDrawer from './DataPreviewDrawer.vue'
-import { getDataSourceList, deleteDataSource, type DataSource } from '../api/datasource'
+import {
+  getDataSourceList,
+  deleteDataSource,
+  testExistingConnection,
+  reconnectDataSource,
+  type DataSource
+} from '../api/datasource'
 
 interface DataSourceWithStatus extends DataSource {
   status: '已连接' | '未连接'
@@ -89,9 +130,13 @@ const searchTerm = ref('')
 const dialogOpen = ref(false)
 const deleteDialogOpen = ref(false)
 const previewDrawerOpen = ref(false)
+const reconnectDialogOpen = ref(false)
 const editingConnection = ref<DataSource | null>(null)
 const deletingId = ref<number | null>(null)
 const previewDataSourceId = ref<number | null>(null)
+const reconnectingConnection = ref<DataSourceWithStatus | null>(null)
+const reconnectPassword = ref('')
+const reconnecting = ref(false)
 
 const filteredConnections = computed(() =>
   connections.value.filter(conn =>
@@ -164,6 +209,78 @@ const handleDeleteConfirm = async () => {
     }
     deleteDialogOpen.value = false
     deletingId.value = null
+  }
+}
+
+// 测试连接
+const handleTestConnection = async (conn: DataSourceWithStatus) => {
+  const loading = ElMessage({
+    message: `正在测试 ${conn.name} 的连接...`,
+    type: 'info',
+    duration: 0
+  })
+
+  try {
+    const result = await testExistingConnection(conn.id)
+    loading.close()
+
+    if (result.success) {
+      ElMessage.success(result.message || '连接成功')
+      // 更新连接状态
+      const index = connections.value.findIndex(c => c.id === conn.id)
+      if (index !== -1) {
+        connections.value[index].status = '已连接'
+        connections.value[index].lastSync = '刚刚'
+      }
+    } else {
+      // 根据错误类型给出不同提示
+      if (result.error_type === 'password_decrypt_failed') {
+        ElMessage({
+          message: result.message + '，请点击「重新连接」输入新密码',
+          type: 'warning',
+          duration: 5000
+        })
+      } else {
+        ElMessage.error(result.message || '连接失败')
+      }
+      // 更新连接状态为未连接
+      const index = connections.value.findIndex(c => c.id === conn.id)
+      if (index !== -1) {
+        connections.value[index].status = '未连接'
+      }
+    }
+  } catch (error: any) {
+    loading.close()
+    ElMessage.error(error.message || '测试连接失败')
+  }
+}
+
+// 重新连接
+const handleReconnectClick = (conn: DataSourceWithStatus) => {
+  reconnectingConnection.value = conn
+  reconnectPassword.value = ''
+  reconnectDialogOpen.value = true
+}
+
+const handleReconnectConfirm = async () => {
+  if (!reconnectingConnection.value || !reconnectPassword.value) return
+
+  reconnecting.value = true
+  try {
+    await reconnectDataSource(reconnectingConnection.value.id, reconnectPassword.value)
+    ElMessage.success('重新连接成功')
+    reconnectDialogOpen.value = false
+
+    // 更新连接状态
+    const index = connections.value.findIndex(c => c.id === reconnectingConnection.value?.id)
+    if (index !== -1) {
+      connections.value[index].status = '已连接'
+      connections.value[index].lastSync = '刚刚'
+    }
+  } catch (error: any) {
+    ElMessage.error(error.message || '重新连接失败')
+  } finally {
+    reconnecting.value = false
   }
 }
 </script>
