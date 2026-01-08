@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from asgi_correlation_id import CorrelationIdMiddleware
 import structlog
-from app.api.v1.endpoints import datasource, dataset, chat, dashboard, auth, admin, upload, data_table
+from app.api.v1.endpoints import datasource, dataset, chat, dashboard, auth, admin, upload, data_table, chat_session
 from app.core.config import settings
 from app.core.logger import setup_logging, get_logger
 from app.core.redis import redis_service
@@ -157,6 +157,7 @@ app.add_middleware(
 app.include_router(datasource.router, prefix=f"{settings.API_V1_STR}/datasources", tags=["datasources"])
 app.include_router(dataset.router, prefix=f"{settings.API_V1_STR}/datasets", tags=["datasets"])
 app.include_router(chat.router, prefix=f"{settings.API_V1_STR}/chat", tags=["chat"])
+app.include_router(chat_session.router, prefix=f"{settings.API_V1_STR}/sessions", tags=["sessions"])
 app.include_router(dashboard.router, prefix=f"{settings.API_V1_STR}/dashboards", tags=["dashboards"])
 app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
 app.include_router(admin.router, prefix=f"{settings.API_V1_STR}/admin", tags=["admin"])

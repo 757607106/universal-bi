@@ -51,7 +51,7 @@ import { computed, watch } from 'vue'
 import { useTheme } from '@/composables/useTheme'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { BarChart, LineChart, PieChart } from 'echarts/charts'
+import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts'
 import {
   GridComponent,
   TooltipComponent,
@@ -68,6 +68,7 @@ use([
   BarChart,
   LineChart,
   PieChart,
+  ScatterChart,
   GridComponent,
   TooltipComponent,
   LegendComponent,
@@ -327,6 +328,144 @@ const chartOption = computed(() => {
             show: false
           },
           data: pieData
+        }
+      ]
+    }
+  }
+
+  // Area Chart (面积图)
+  if (props.chartType === 'area') {
+    return {
+      ...commonOption,
+      xAxis: {
+        type: 'category',
+        data: xAxisData,
+        boundaryGap: false,
+        axisLine: {
+          lineStyle: {
+            color: axisLineColor
+          }
+        },
+        axisLabel: {
+          color: textColorSecondary,
+          rotate: 30
+        },
+        axisTick: {
+          show: false
+        }
+      },
+      yAxis: {
+        type: 'value',
+        splitLine: {
+          lineStyle: {
+            color: gridColor,
+            type: 'dashed',
+            opacity: 0.3
+          }
+        },
+        axisLabel: {
+          color: textColorSecondary
+        }
+      },
+      series: [
+        {
+          name: yAxisCol,
+          type: 'line',
+          data: seriesData,
+          smooth: true,
+          symbol: 'none',
+          lineStyle: {
+            width: 2,
+            color: colorPalette[1] // Indigo
+          },
+          areaStyle: {
+            color: {
+              type: 'linear',
+              x: 0,
+              y: 0,
+              x2: 0,
+              y2: 1,
+              colorStops: [
+                { offset: 0, color: 'rgba(129, 140, 248, 0.5)' }, // Indigo
+                { offset: 1, color: 'rgba(129, 140, 248, 0.05)' }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+
+  // Scatter Chart (散点图)
+  if (props.chartType === 'scatter') {
+    const scatterData = props.data.rows.map(row => [row[xAxisCol], row[yAxisCol]])
+
+    return {
+      ...commonOption,
+      tooltip: {
+        trigger: 'item',
+        backgroundColor: tooltipBg,
+        borderColor: tooltipBorder,
+        textStyle: { color: tooltipText },
+        formatter: (params: any) => {
+          return `${xAxisCol}: ${params.value[0]}<br/>${yAxisCol}: ${params.value[1]}`
+        }
+      },
+      xAxis: {
+        type: 'value',
+        name: xAxisCol,
+        nameLocation: 'middle',
+        nameGap: 30,
+        nameTextStyle: {
+          color: textColorSecondary
+        },
+        splitLine: {
+          lineStyle: {
+            color: gridColor,
+            type: 'dashed',
+            opacity: 0.3
+          }
+        },
+        axisLabel: {
+          color: textColorSecondary
+        }
+      },
+      yAxis: {
+        type: 'value',
+        name: yAxisCol,
+        nameLocation: 'middle',
+        nameGap: 40,
+        nameTextStyle: {
+          color: textColorSecondary
+        },
+        splitLine: {
+          lineStyle: {
+            color: gridColor,
+            type: 'dashed',
+            opacity: 0.3
+          }
+        },
+        axisLabel: {
+          color: textColorSecondary
+        }
+      },
+      series: [
+        {
+          name: yAxisCol,
+          type: 'scatter',
+          data: scatterData,
+          symbolSize: 12,
+          itemStyle: {
+            color: colorPalette[2], // Emerald
+            borderColor: '#fff',
+            borderWidth: 1
+          },
+          emphasis: {
+            itemStyle: {
+              shadowBlur: 10,
+              shadowColor: 'rgba(52, 211, 153, 0.5)'
+            }
+          }
         }
       ]
     }

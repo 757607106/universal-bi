@@ -61,19 +61,21 @@ export interface ConversationMessage {
   content: string
 }
 
-export const sendChat = async (data: { 
-  dataset_id: number, 
-  question: string, 
+export const sendChat = async (data: {
+  dataset_id: number,
+  question: string,
   use_cache?: boolean,
   conversation_history?: ConversationMessage[],
-  data_table_id?: number
+  data_table_id?: number,
+  session_id?: number
 }) => {
-  const responseData = await http.post<any, { 
-    dataset_id: number, 
-    question: string, 
+  const responseData = await http.post<any, {
+    dataset_id: number,
+    question: string,
     use_cache?: boolean,
     conversation_history?: ConversationMessage[],
-    data_table_id?: number
+    data_table_id?: number,
+    session_id?: number
   }>('/chat/', data)
   // 直接返回后端数据，保留原始结构
   return {

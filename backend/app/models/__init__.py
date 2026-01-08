@@ -10,8 +10,10 @@ from app.models.metadata import (
     DashboardCard,
     BusinessTerm,
     TrainingLog,
+    ChatSession,
     ChatMessage,
-    ComputedMetric
+    ComputedMetric,
+    DashboardTemplate
 )
 from app.models.data_table import (
     Folder,
@@ -28,8 +30,10 @@ __all__ = [
     "DashboardCard",
     "BusinessTerm",
     "TrainingLog",
+    "ChatSession",
     "ChatMessage",
     "ComputedMetric",
+    "DashboardTemplate",
     "Folder",
     "DataTable",
     "TableField"

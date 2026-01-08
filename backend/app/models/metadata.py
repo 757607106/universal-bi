@@ -111,20 +111,41 @@ class BusinessTerm(Base):
     owner = relationship("User")
 
 
+class ChatSession(Base):
+    """会话模型 - 用于分组管理用户的聊天会话"""
+    __tablename__ = "chat_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(255), default="新会话")  # 会话标题，默认取首条消息前20字符
+    dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=True)  # 关联的数据集（可选）
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # 会话所有者
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    dataset = relationship("Dataset")
+    owner = relationship("User")
+    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
+
+
 class ChatMessage(Base):
     """会话消息模型 - 用于存储用户与 AI 的对话历史"""
     __tablename__ = "chat_messages"
 
     id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("chat_sessions.id"), nullable=True)  # 关联会话
     dataset_id = Column(Integer, ForeignKey("datasets.id"))
     user_id = Column(Integer, ForeignKey("users.id"))
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # 为 None 则为公共资源（实际上聊天记录一般是私有的）
+    role = Column(String(20), default="user")  # user/assistant
     question = Column(Text)
     answer = Column(Text, nullable=True)
     sql = Column(Text, nullable=True)
     chart_type = Column(String(50), nullable=True)
+    chart_data = Column(JSON, nullable=True)  # 存储图表数据
+    insight = Column(Text, nullable=True)  # AI分析洞察
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
+    session = relationship("ChatSession", back_populates="messages")
     dataset = relationship("Dataset")
     user = relationship("User", foreign_keys=[user_id])
     owner = relationship("User", foreign_keys=[owner_id])
@@ -142,6 +163,24 @@ class ComputedMetric(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     dataset = relationship("Dataset")
+    owner = relationship("User")
+
+
+class DashboardTemplate(Base):
+    """看板模板模型 - 用于保存和分享看板配置"""
+    __tablename__ = "dashboard_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), index=True, nullable=False)
+    description = Column(String(500), nullable=True)
+    source_dashboard_id = Column(Integer, ForeignKey("dashboards.id"), nullable=True)  # 来源看板（可选）
+    config = Column(JSON, nullable=False)  # 存储卡片配置的快照
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    is_public = Column(Boolean, default=False)  # 是否公开（支持公开模板）
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    source_dashboard = relationship("Dashboard")
     owner = relationship("User")

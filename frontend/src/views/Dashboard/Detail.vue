@@ -17,9 +17,18 @@
           <el-radio-button label="week">本周</el-radio-button>
           <el-radio-button label="month">本月</el-radio-button>
         </el-radio-group>
-        
+
         <el-button :icon="Refresh" @click="refreshAllCards" size="small" class="!bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-700 !text-gray-600 dark:!text-slate-300 hover:!bg-gray-100 dark:hover:!bg-slate-700 transition-colors">
           刷新数据
+        </el-button>
+
+        <el-button
+          :icon="FolderAdd"
+          @click="showSaveTemplateDialog = true"
+          size="small"
+          class="!bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-700 !text-gray-600 dark:!text-slate-300 hover:!bg-gray-100 dark:hover:!bg-slate-700 transition-colors"
+        >
+          保存为模板
         </el-button>
       </div>
     </div>
@@ -143,6 +152,31 @@
         </div>
       </template>
     </div>
+
+    <!-- 保存为模板对话框 -->
+    <el-dialog
+      v-model="showSaveTemplateDialog"
+      title="保存为模板"
+      width="450px"
+      class="dark:bg-slate-800"
+    >
+      <el-form :model="templateForm" label-position="top">
+        <el-form-item label="模板名称" required>
+          <el-input v-model="templateForm.name" placeholder="输入模板名称" />
+        </el-form-item>
+        <el-form-item label="模板描述">
+          <el-input v-model="templateForm.description" type="textarea" :rows="3" placeholder="描述这个模板的用途" />
+        </el-form-item>
+        <el-form-item label="公开模板">
+          <el-switch v-model="templateForm.is_public" />
+          <span class="ml-2 text-sm text-gray-500">公开后其他用户可以使用此模板</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showSaveTemplateDialog = false">取消</el-button>
+        <el-button type="primary" @click="handleSaveAsTemplate" :loading="savingTemplate">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -162,12 +196,14 @@ import {
   Money,
   Goods,
   Box,
-  TrendCharts
+  TrendCharts,
+  FolderAdd
 } from '@element-plus/icons-vue'
 import {
   getDashboardDetail,
   getCardData,
   deleteCard,
+  saveDashboardAsTemplate,
   type Dashboard,
   type CardData
 } from '@/api/dashboard'
@@ -184,6 +220,15 @@ const cardErrorMap = reactive<Record<number, string>>({})
 
 // UI Controls
 const timeRange = ref('week')
+
+// 模板相关状态
+const showSaveTemplateDialog = ref(false)
+const savingTemplate = ref(false)
+const templateForm = reactive({
+  name: '',
+  description: '',
+  is_public: false
+})
 
 // Mock KPI Data
 const kpiCards = ref([
@@ -312,6 +357,37 @@ const handleDeleteCard = async (cardId: number) => {
 
 const goBack = () => {
   router.push('/dashboard')
+}
+
+/**
+ * 保存为模板
+ */
+const handleSaveAsTemplate = async () => {
+  if (!templateForm.name.trim()) {
+    ElMessage.warning('请输入模板名称')
+    return
+  }
+
+  if (!dashboard.value) return
+
+  savingTemplate.value = true
+  try {
+    await saveDashboardAsTemplate(dashboard.value.id, {
+      name: templateForm.name,
+      description: templateForm.description,
+      is_public: templateForm.is_public
+    })
+    ElMessage.success('模板保存成功')
+    showSaveTemplateDialog.value = false
+    // 重置表单
+    templateForm.name = ''
+    templateForm.description = ''
+    templateForm.is_public = false
+  } catch (error) {
+    ElMessage.error('保存模板失败')
+  } finally {
+    savingTemplate.value = false
+  }
 }
 </script>
 

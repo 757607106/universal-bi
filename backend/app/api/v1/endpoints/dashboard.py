@@ -8,15 +8,20 @@ import logging
 
 from app.db.session import get_db
 from app.api.deps import get_current_user, apply_ownership_filter
-from app.models.metadata import Dashboard, DashboardCard, Dataset, User
+from app.models.metadata import Dashboard, DashboardCard, Dataset, User, DashboardTemplate
 from app.schemas.dashboard import (
     DashboardCreate,
     DashboardResponse,
     DashboardCardCreate,
     DashboardCardResponse,
-    DashboardCardDataResponse
+    DashboardCardDataResponse,
+    DashboardTemplateCreate,
+    DashboardTemplateUpdate,
+    DashboardTemplateResponse,
+    DashboardTemplateListResponse
 )
 from app.services.db_inspector import DBInspector
+from sqlalchemy import or_
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -258,3 +263,214 @@ def delete_dashboard(
     db.delete(dashboard)
     db.commit()
     return {"message": "Dashboard deleted successfully"}
+
+
+# ============ 看板模板相关 API ============
+
+@router.post("/{id}/save-as-template", response_model=DashboardTemplateResponse)
+def save_dashboard_as_template(
+    id: int,
+    template_in: DashboardTemplateCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    将看板保存为模板
+    """
+    # 验证 Dashboard 存在且有权限
+    dash_query = db.query(Dashboard).filter(Dashboard.id == id)
+    dash_query = apply_ownership_filter(dash_query, Dashboard, current_user)
+    dashboard = dash_query.first()
+
+    if not dashboard:
+        raise HTTPException(status_code=404, detail="Dashboard not found or access denied")
+
+    # 构建模板配置（卡片快照）
+    config = {
+        "cards": []
+    }
+    for card in dashboard.cards:
+        config["cards"].append({
+            "title": card.title,
+            "dataset_id": card.dataset_id,
+            "sql": card.sql,
+            "chart_type": card.chart_type,
+            "layout": card.layout
+        })
+
+    # 创建模板
+    template = DashboardTemplate(
+        name=template_in.name,
+        description=template_in.description,
+        source_dashboard_id=id,
+        config=config,
+        owner_id=current_user.id,
+        is_public=template_in.is_public
+    )
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+
+    logger.info(f"Dashboard {id} saved as template {template.id} by user {current_user.id}")
+    return template
+
+
+@router.get("/templates/", response_model=List[DashboardTemplateListResponse])
+def list_templates(
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    获取模板列表（包含公开模板和自己的私有模板）
+    """
+    templates = db.query(DashboardTemplate).filter(
+        or_(
+            DashboardTemplate.is_public == True,
+            DashboardTemplate.owner_id == current_user.id
+        )
+    ).order_by(
+        DashboardTemplate.created_at.desc()
+    ).offset(skip).limit(limit).all()
+
+    return templates
+
+
+@router.get("/templates/{template_id}", response_model=DashboardTemplateResponse)
+def get_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    获取模板详情
+    """
+    template = db.query(DashboardTemplate).filter(
+        DashboardTemplate.id == template_id,
+        or_(
+            DashboardTemplate.is_public == True,
+            DashboardTemplate.owner_id == current_user.id
+        )
+    ).first()
+
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found or access denied")
+
+    return template
+
+
+@router.post("/templates/{template_id}/create-dashboard", response_model=DashboardResponse)
+def create_dashboard_from_template(
+    template_id: int,
+    name: str = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    从模板创建新看板
+    """
+    # 获取模板
+    template = db.query(DashboardTemplate).filter(
+        DashboardTemplate.id == template_id,
+        or_(
+            DashboardTemplate.is_public == True,
+            DashboardTemplate.owner_id == current_user.id
+        )
+    ).first()
+
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found or access denied")
+
+    # 创建新看板
+    dashboard_name = name if name else f"{template.name} (副本)"
+    dashboard = Dashboard(
+        name=dashboard_name,
+        description=template.description,
+        owner_id=current_user.id
+    )
+    db.add(dashboard)
+    db.flush()  # 获取 dashboard.id
+
+    # 从模板配置创建卡片
+    for card_config in template.config.get("cards", []):
+        # 验证用户是否有权访问对应的 Dataset
+        ds_query = db.query(Dataset).filter(Dataset.id == card_config["dataset_id"])
+        ds_query = apply_ownership_filter(ds_query, Dataset, current_user)
+        dataset = ds_query.first()
+
+        if not dataset:
+            # 跳过无权访问的数据集的卡片
+            logger.warning(f"Skipping card with dataset_id {card_config['dataset_id']} - user has no access")
+            continue
+
+        card = DashboardCard(
+            dashboard_id=dashboard.id,
+            title=card_config["title"],
+            dataset_id=card_config["dataset_id"],
+            sql=card_config["sql"],
+            chart_type=card_config["chart_type"],
+            layout=card_config.get("layout")
+        )
+        db.add(card)
+
+    db.commit()
+    db.refresh(dashboard)
+
+    logger.info(f"Dashboard created from template {template_id} by user {current_user.id}")
+    return dashboard
+
+
+@router.patch("/templates/{template_id}", response_model=DashboardTemplateResponse)
+def update_template(
+    template_id: int,
+    template_in: DashboardTemplateUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    更新模板（只能更新自己的模板）
+    """
+    template = db.query(DashboardTemplate).filter(
+        DashboardTemplate.id == template_id,
+        DashboardTemplate.owner_id == current_user.id
+    ).first()
+
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found or access denied")
+
+    if template_in.name is not None:
+        template.name = template_in.name
+    if template_in.description is not None:
+        template.description = template_in.description
+    if template_in.is_public is not None:
+        template.is_public = template_in.is_public
+
+    template.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(template)
+
+    return template
+
+
+@router.delete("/templates/{template_id}")
+def delete_template(
+    template_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    删除模板（只能删除自己的模板）
+    """
+    template = db.query(DashboardTemplate).filter(
+        DashboardTemplate.id == template_id,
+        DashboardTemplate.owner_id == current_user.id
+    ).first()
+
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found or access denied")
+
+    db.delete(template)
+    db.commit()
+
+    return {"message": "Template deleted successfully"}

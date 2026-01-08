@@ -4,12 +4,13 @@ from sqlalchemy.orm import Session, selectinload
 import pandas as pd
 import json
 import uuid
+from datetime import datetime
 
 from app.db.session import get_db
 from app.api.deps import get_current_user, apply_ownership_filter
-from app.models.metadata import User, Dataset
+from app.models.metadata import User, Dataset, ChatSession, ChatMessage
 from app.schemas.chat import (
-    ChatRequest, ChatResponse, FeedbackRequest, FeedbackResponse, 
+    ChatRequest, ChatResponse, FeedbackRequest, FeedbackResponse,
     SummaryRequest, SummaryResponse, InputSuggestRequest, InputSuggestResponse,
     FollowupSuggestRequest, FollowupSuggestResponse, ExportRequest
 )
@@ -33,6 +34,7 @@ async def chat(
     """
     Chat with the dataset to generate SQL and results.
     应用数据隔离：需要验证 Dataset 的访问权
+    支持 session_id 参数，自动保存消息到会话
     """
     # 记录用户提问事件
     logger.info(
@@ -41,13 +43,14 @@ async def chat(
         user_email=current_user.email,
         dataset_id=request.dataset_id,
         question_length=len(request.question),
-        use_cache=request.use_cache
+        use_cache=request.use_cache,
+        session_id=request.session_id
     )
     # 验证 Dataset 访问权限
     ds_query = db.query(Dataset).filter(Dataset.id == request.dataset_id)
     ds_query = apply_ownership_filter(ds_query, Dataset, current_user)
     dataset = ds_query.first()
-    
+
     if not dataset:
         logger.warning(
             "Dataset access denied",
@@ -56,7 +59,17 @@ async def chat(
             reason="not found or access denied"
         )
         raise HTTPException(status_code=404, detail="Dataset not found or access denied")
-    
+
+    # 验证会话访问权限（如果提供了session_id）
+    session = None
+    if request.session_id:
+        session = db.query(ChatSession).filter(
+            ChatSession.id == request.session_id,
+            ChatSession.owner_id == current_user.id
+        ).first()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found or access denied")
+
     try:
         result = await VannaSqlGenerator.generate_result(
             dataset_id=request.dataset_id,
@@ -66,7 +79,7 @@ async def chat(
             conversation_history=request.conversation_history,  # 传递对话历史
             data_table_id=request.data_table_id  # 传递数据表ID
         )
-        
+
         logger.info(
             "Chat request completed",
             user_id=current_user.id,
@@ -75,7 +88,62 @@ async def chat(
             chart_type=result.get('chart_type'),
             row_count=len(result.get('rows', [])) if result.get('rows') else 0
         )
-        
+
+        # 保存消息到会话（如果提供了session_id）
+        if session:
+            # 构建chart_data用于存储
+            chart_data = None
+            if result.get('columns') and result.get('rows'):
+                chart_data = {
+                    'columns': result.get('columns'),
+                    'rows': result.get('rows')
+                }
+
+            # 保存用户消息
+            user_msg = ChatMessage(
+                session_id=session.id,
+                dataset_id=request.dataset_id,
+                user_id=current_user.id,
+                owner_id=current_user.id,
+                role="user",
+                question=request.question
+            )
+            db.add(user_msg)
+
+            # 保存AI响应
+            ai_msg = ChatMessage(
+                session_id=session.id,
+                dataset_id=request.dataset_id,
+                user_id=current_user.id,
+                owner_id=current_user.id,
+                role="assistant",
+                question=request.question,
+                answer=result.get('answer_text') or result.get('summary'),
+                sql=result.get('sql'),
+                chart_type=result.get('chart_type'),
+                chart_data=chart_data,
+                insight=result.get('insight')
+            )
+            db.add(ai_msg)
+
+            # 更新会话的更新时间
+            session.updated_at = datetime.utcnow()
+
+            # 如果是会话的第一条消息，自动设置标题
+            msg_count = db.query(ChatMessage).filter(
+                ChatMessage.session_id == session.id
+            ).count()
+            if msg_count <= 2 and session.title == "新会话":
+                # 取问题前20个字符作为标题
+                session.title = request.question[:20] + ("..." if len(request.question) > 20 else "")
+
+            db.commit()
+            logger.info(
+                "Chat messages saved to session",
+                session_id=session.id,
+                user_id=current_user.id
+            )
+
         return result
     except ValueError as e:
         logger.error(

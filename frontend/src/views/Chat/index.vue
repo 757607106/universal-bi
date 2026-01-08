@@ -1,6 +1,61 @@
 <template>
-  <div class="h-full flex flex-col bg-transparent relative">
-    <!-- Header / Toolbar -->
+  <div class="h-full flex bg-transparent relative">
+    <!-- 会话侧边栏 -->
+    <aside class="w-60 flex-shrink-0 flex flex-col border-r border-gray-200 dark:border-slate-700/50 bg-gray-50 dark:bg-slate-900/50">
+      <!-- 新建会话按钮 -->
+      <div class="p-3 border-b border-gray-200 dark:border-slate-700/50">
+        <el-button
+          type="primary"
+          class="w-full !bg-gradient-to-r !from-blue-600 !to-cyan-600 !border-none"
+          @click="handleNewSession"
+        >
+          <el-icon class="mr-1"><Plus /></el-icon>
+          新建会话
+        </el-button>
+      </div>
+
+      <!-- 会话列表 -->
+      <div class="flex-1 overflow-y-auto py-2">
+        <div
+          v-for="session in sessions"
+          :key="session.id"
+          @click="handleSelectSession(session)"
+          class="group mx-2 mb-1 px-3 py-2.5 rounded-lg cursor-pointer transition-all duration-200"
+          :class="[
+            currentSessionId === session.id
+              ? 'bg-blue-100 dark:bg-slate-800 text-blue-700 dark:text-cyan-400'
+              : 'hover:bg-gray-100 dark:hover:bg-slate-800/50 text-gray-700 dark:text-slate-300'
+          ]"
+        >
+          <div class="flex items-center justify-between">
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium truncate">{{ session.title }}</p>
+              <p class="text-xs text-gray-500 dark:text-slate-500 mt-0.5">
+                {{ formatSessionTime(session.updated_at) }}
+              </p>
+            </div>
+            <el-button
+              v-show="currentSessionId === session.id"
+              :icon="Delete"
+              size="small"
+              circle
+              class="!bg-transparent !border-none !text-gray-400 hover:!text-red-500"
+              @click.stop="handleDeleteSession(session)"
+            />
+          </div>
+        </div>
+
+        <!-- 空状态 -->
+        <div v-if="sessions.length === 0" class="text-center py-8 text-gray-400 dark:text-slate-500">
+          <el-icon class="text-2xl mb-2"><ChatDotRound /></el-icon>
+          <p class="text-xs">暂无会话记录</p>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 主聊天区域 -->
+    <div class="flex-1 flex flex-col">
+      <!-- Header / Toolbar -->
     <div class="h-16 border-b border-gray-200 dark:border-slate-700/50 bg-white/50 dark:bg-transparent px-6 flex items-center justify-between flex-shrink-0 z-10 transition-colors">
       <div class="flex items-center gap-4">
         <h2 class="text-lg font-semibold text-gray-900 dark:text-slate-100 flex items-center gap-2 transition-colors">
@@ -393,31 +448,10 @@
                     </div>
                   </div>
                   
-                  <!-- Save to Dashboard Button -->
-                  <div class="flex justify-end opacity-0 group-hover:opacity-100 transition-opacity">
-                    <el-button
-                      size="small"
-                      @click="handleSaveToDashboard(msg, index)"
-                      :icon="DocumentAdd"
-                      class="!bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-700 !text-gray-600 dark:!text-slate-300 hover:!bg-gray-50 dark:hover:!bg-slate-700 !rounded-md"
-                    >
-                      保存到看板
-                    </el-button>
-                  </div>
-                </div>
-
-                <!-- SQL Collapse -->
-                <el-collapse v-if="msg.sql" class="border-t-0 mt-2">
-                  <el-collapse-item name="1">
-                    <template #title>
-                        <span class="text-xs text-gray-400 dark:text-slate-500 hover:text-gray-600 dark:hover:text-slate-300 transition-colors">查看 SQL 详情</span>
-                    </template>
-                    <div class="bg-gray-50 dark:bg-slate-950 text-gray-600 dark:text-slate-300 p-4 rounded-xl font-mono text-xs overflow-x-auto border border-gray-200 dark:border-slate-800 shadow-inner">
-                      {{ msg.sql }}
-                    </div>
-                    
-                    <!-- Feedback Buttons -->
-                    <div class="flex items-center gap-3 mt-3 pt-3 border-t border-gray-100 dark:border-slate-800">
+                  <!-- Action Bar: 评价 + 保存到看板 -->
+                  <div class="flex items-center justify-between mt-4 pt-3 border-t border-gray-100 dark:border-slate-700/50">
+                    <!-- 左侧：评价按钮 -->
+                    <div v-if="msg.sql" class="flex items-center gap-3">
                       <span class="text-xs text-gray-400 dark:text-slate-500">结果评价：</span>
                       <div class="flex gap-2">
                         <el-button
@@ -453,6 +487,30 @@
                             重新生成
                         </el-button>
                       </div>
+                    </div>
+                    <div v-else></div>
+
+                    <!-- 右侧：保存到看板 -->
+                    <el-button
+                      v-if="msg.chartData && msg.chartData.columns && msg.chartData.rows && msg.chartData.rows.length > 0"
+                      size="small"
+                      @click="handleSaveToDashboard(msg, index)"
+                      :icon="DocumentAdd"
+                      class="!bg-white dark:!bg-slate-800 !border-gray-200 dark:!border-slate-700 !text-gray-600 dark:!text-slate-300 hover:!bg-gray-50 dark:hover:!bg-slate-700 !rounded-md"
+                    >
+                      保存到看板
+                    </el-button>
+                  </div>
+                </div>
+
+                <!-- SQL Collapse -->
+                <el-collapse v-if="msg.sql" class="border-t-0 mt-2">
+                  <el-collapse-item name="1">
+                    <template #title>
+                        <span class="text-xs text-gray-400 dark:text-slate-500 hover:text-gray-600 dark:hover:text-slate-300 transition-colors">查看 SQL 详情</span>
+                    </template>
+                    <div class="bg-gray-50 dark:bg-slate-950 text-gray-600 dark:text-slate-300 p-4 rounded-xl font-mono text-xs overflow-x-auto border border-gray-200 dark:border-slate-800 shadow-inner">
+                      {{ msg.sql }}
                     </div>
                   </el-collapse-item>
                 </el-collapse>
@@ -577,6 +635,7 @@
         </el-button>
       </template>
     </el-dialog>
+    </div>
   </div>
 </template>
 
@@ -609,12 +668,14 @@ import {
   Lightning,
   Refresh,
   Download,
-  Document
+  Document,
+  Plus
 } from '@element-plus/icons-vue'
 import { getDatasetList, type Dataset } from '@/api/dataset'
 import { sendChat, submitFeedback, generateSummary, exportToExcel, exportToCSV, type ConversationMessage, suggestInput } from '@/api/chat'
 import { getDashboards, createDashboard, addCardToDashboard, type Dashboard } from '@/api/dashboard'
 import { getDataTableList, type DataTable } from '@/api/dataTable'
+import { getSessions, createSession, getSessionDetail, deleteSession, type ChatSession, type ChatSessionDetail } from '@/api/chatSession'
 import DynamicChart from '@/components/Charts/DynamicChart.vue'
 
 const route = useRoute()
@@ -654,6 +715,11 @@ const inputMessage = ref('')
 const sending = ref(false)
 const chatContainer = ref<HTMLElement | null>(null)
 const activeCollapse = ref<string[]>([])
+
+// 会话管理相关状态
+const sessions = ref<ChatSession[]>([])
+const currentSessionId = ref<number | undefined>(undefined)
+const loadingSessions = ref(false)
 
 // 计算属性：是否已选择数据源
 const isDataSourceSelected = computed(() => {
@@ -740,28 +806,37 @@ const currentFeedbackMessageIndex = ref<number>(-1)
 onMounted(async () => {
   loadingDatasets.value = true
   loadingDataTables.value = true
+  loadingSessions.value = true
   try {
     // 加载数据集
     const res = await getDatasetList()
     console.log('[Chat] All datasets from API:', res.map(d => ({ id: d.id, name: d.name, datasource_id: d.datasource_id, status: d.status })))
-    
+
     datasets.value = res.filter(d => d.status === 'completed')
     console.log('[Chat] Filtered completed datasets:', datasets.value.map(d => ({ id: d.id, name: d.name, datasource_id: d.datasource_id, status: d.status })))
-    
+
     // 加载数据表
     const tables = await getDataTableList()
     dataTables.value = tables.filter(t => t.status === 'active')
     console.log('[Chat] Loaded data tables:', dataTables.value.map(t => ({ id: t.id, name: t.display_name, datasource_id: t.datasource_id })))
-    
+
+    // 加载会话列表
+    try {
+      sessions.value = await getSessions()
+      console.log('[Chat] Loaded sessions:', sessions.value.length)
+    } catch (e) {
+      console.warn('[Chat] Failed to load sessions:', e)
+    }
+
     // 检查URL参数
     const datasetIdFromQuery = route.query.dataset
     if (datasetIdFromQuery) {
       sourceType.value = 'dataset'
       const datasetId = Number(datasetIdFromQuery)
-      
+
       const allDatasets = await getDatasetList()
       const targetDataset = allDatasets.find(d => d.id === datasetId)
-      
+
       if (targetDataset) {
         const status = targetDataset.status
         if (status === 'completed') {
@@ -795,6 +870,7 @@ onMounted(async () => {
   } finally {
     loadingDatasets.value = false
     loadingDataTables.value = false
+    loadingSessions.value = false
   }
 })
 
@@ -956,7 +1032,8 @@ const handleSend = async () => {
       dataset_id: datasetId!,
       question: question,
       conversation_history: conversationHistory.length > 0 ? conversationHistory : undefined,
-      data_table_id: dataTableId
+      data_table_id: dataTableId,
+      session_id: currentSessionId.value
     })
 
     // 4. Update AI Message (保存问题和数据集ID)
@@ -1669,6 +1746,125 @@ const handleDataTableChange = (tableId: number) => {
   }
   // 清空对话历史
   messages.value = []
+}
+
+// ========== 会话管理相关函数 ==========
+
+/**
+ * 格式化会话时间
+ */
+const formatSessionTime = (dateStr: string): string => {
+  const date = new Date(dateStr)
+  const now = new Date()
+  const diffMs = now.getTime() - date.getTime()
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+
+  if (diffDays === 0) {
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  } else if (diffDays === 1) {
+    return '昨天'
+  } else if (diffDays < 7) {
+    return `${diffDays}天前`
+  } else {
+    return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+  }
+}
+
+/**
+ * 创建新会话
+ */
+const handleNewSession = async () => {
+  try {
+    const datasetId = sourceType.value === 'dataset' ? currentDatasetId.value : undefined
+    const newSession = await createSession({ dataset_id: datasetId })
+    sessions.value.unshift(newSession)
+    currentSessionId.value = newSession.id
+    messages.value = []
+    ElMessage.success('新会话已创建')
+  } catch (error) {
+    console.error('[Chat] Failed to create session:', error)
+    ElMessage.error('创建会话失败')
+  }
+}
+
+/**
+ * 选择会话
+ */
+const handleSelectSession = async (session: ChatSession) => {
+  if (currentSessionId.value === session.id) return
+
+  currentSessionId.value = session.id
+  messages.value = []
+
+  try {
+    const detail = await getSessionDetail(session.id)
+
+    // 恢复会话的数据集设置
+    if (detail.dataset_id) {
+      const hasDataset = datasets.value.some(d => d.id === detail.dataset_id)
+      if (hasDataset) {
+        sourceType.value = 'dataset'
+        currentDatasetId.value = detail.dataset_id
+      }
+    }
+
+    // 恢复消息历史
+    for (const msg of detail.messages) {
+      if (msg.role === 'user') {
+        messages.value.push({
+          type: 'user',
+          content: msg.question || ''
+        })
+      } else if (msg.role === 'assistant') {
+        messages.value.push({
+          type: 'ai',
+          content: msg.answer || undefined,
+          sql: msg.sql || undefined,
+          chartData: msg.chart_data || undefined,
+          chartType: msg.chart_type || undefined,
+          insight: msg.insight || undefined,
+          question: msg.question || undefined,
+          datasetId: detail.dataset_id || undefined
+        })
+      }
+    }
+
+    scrollToBottom()
+  } catch (error) {
+    console.error('[Chat] Failed to load session:', error)
+    ElMessage.error('加载会话失败')
+  }
+}
+
+/**
+ * 删除会话
+ */
+const handleDeleteSession = async (session: ChatSession) => {
+  try {
+    await deleteSession(session.id)
+    sessions.value = sessions.value.filter(s => s.id !== session.id)
+
+    if (currentSessionId.value === session.id) {
+      currentSessionId.value = undefined
+      messages.value = []
+    }
+
+    ElMessage.success('会话已删除')
+  } catch (error) {
+    console.error('[Chat] Failed to delete session:', error)
+    ElMessage.error('删除会话失败')
+  }
+}
+
+/**
+ * 刷新会话列表
+ */
+const refreshSessions = async () => {
+  try {
+    sessions.value = await getSessions()
+  } catch (error) {
+    console.warn('[Chat] Failed to refresh sessions:', error)
+  }
 }
 </script>
 

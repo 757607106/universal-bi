@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
+from datetime import datetime
 
 class ChatRequest(BaseModel):
     dataset_id: int
@@ -7,6 +8,7 @@ class ChatRequest(BaseModel):
     use_cache: bool = True  # 是否使用缓存，默认启用
     conversation_history: Optional[List[Dict[str, str]]] = None  # 对话历史，用于上下文理解
     data_table_id: Optional[int] = None  # 数据表ID，如果指定则只查询该表
+    session_id: Optional[int] = None  # 会话ID，用于保存聊天历史
 
 class ChatResponse(BaseModel):
     sql: Optional[str] = None
@@ -94,3 +96,58 @@ class ExportRequest(BaseModel):
     data_interpretation: Optional[DataInterpretation] = None
     fluctuation_analysis: Optional[FluctuationAnalysis] = None
     format: str  # "excel" | "excel_with_chart" | "pdf" | "csv"
+
+
+# ============ 会话管理相关 Schema ============
+
+class ChatSessionCreate(BaseModel):
+    """创建会话请求"""
+    title: Optional[str] = "新会话"
+    dataset_id: Optional[int] = None
+
+
+class ChatSessionUpdate(BaseModel):
+    """更新会话请求"""
+    title: Optional[str] = None
+
+
+class ChatMessageResponse(BaseModel):
+    """消息响应"""
+    id: int
+    session_id: Optional[int]
+    role: str
+    question: Optional[str]
+    answer: Optional[str]
+    sql: Optional[str]
+    chart_type: Optional[str]
+    chart_data: Optional[Dict[str, Any]]
+    insight: Optional[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ChatSessionResponse(BaseModel):
+    """会话响应"""
+    id: int
+    title: str
+    dataset_id: Optional[int]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ChatSessionDetailResponse(BaseModel):
+    """会话详情响应（包含消息列表）"""
+    id: int
+    title: str
+    dataset_id: Optional[int]
+    created_at: datetime
+    updated_at: datetime
+    messages: List[ChatMessageResponse]
+
+    class Config:
+        from_attributes = True
