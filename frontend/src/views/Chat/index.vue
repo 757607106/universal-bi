@@ -986,12 +986,15 @@ const handleSend = async () => {
           status: d.status 
         })))
         
-        // 查找使用相同数据源的已训练数据集
+        // 查找使用相同数据源的已训练数据集，并且该数据集包含选定的表
         const matchingDataset = datasets.value.find(d => {
-          const isMatching = d.datasource_id !== null && 
-                            d.datasource_id === selectedTable.datasource_id && 
-                            d.status === 'completed'
-          console.log(`[Chat] Checking dataset "${d.name}" (datasource_id: ${d.datasource_id}, status: ${d.status}) - Match: ${isMatching}`)
+          const hasCorrectDatasource = d.datasource_id !== null && 
+                                       d.datasource_id === selectedTable.datasource_id
+          const isCompleted = d.status === 'completed'
+          const containsTable = d.schema_config?.includes(selectedTable.physical_name)
+          const isMatching = hasCorrectDatasource && isCompleted && containsTable
+          
+          console.log(`[Chat] Checking dataset "${d.name}" (datasource_id: ${d.datasource_id}, status: ${d.status}, contains table: ${containsTable}) - Match: ${isMatching}`)
           return isMatching
         })
         

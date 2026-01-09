@@ -7,11 +7,12 @@ import time
 
 from app.db.session import get_db, SessionLocal
 from app.api.deps import get_current_user, apply_ownership_filter
-from app.models.metadata import Dataset, DataSource, BusinessTerm, User, TrainingLog
+from app.models.metadata import Dataset, DataSource, BusinessTerm, User, TrainingLog, ComputedMetric
 from app.schemas.dataset import (
     DatasetCreate, DatasetResponse, DatasetUpdateTables,
     BusinessTermCreate, BusinessTermResponse,
     AnalyzeRelationshipsRequest, AnalyzeRelationshipsResponse,
+    EdgeResponse, NodeResponse, FieldResponse,
     CreateViewRequest, TrainingLogResponse, TrainingDataResponse,
     TrainQARequest, TrainDocRequest, SuggestedQuestions
 )
@@ -23,6 +24,8 @@ from app.services.vanna import (
     VannaAnalystService
 )
 from app.services.vanna.facade import VannaManager
+from app.services.vanna.relationship_analyzer import RelationshipAnalyzer
+from app.services.duckdb_service import DuckDBService
 
 router = APIRouter()
 
@@ -105,6 +108,114 @@ def get_dataset(
         raise HTTPException(status_code=404, detail="Dataset not found or access denied")
     
     return dataset
+
+@router.get("/{id}/tables")
+def get_dataset_tables(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get tables and their schemas for a dataset.
+    支持 DuckDB 和传统数据源。
+    """
+    query = db.query(Dataset).filter(Dataset.id == id)
+    query = apply_ownership_filter(query, Dataset, current_user)
+    dataset = query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    try:
+        # 检查是否为 DuckDB 数据集
+        if dataset.duckdb_path:
+            # 从 DuckDB 获取表信息
+            from app.core.logger import get_logger
+            logger = get_logger(__name__)
+            
+            logger.info(f"Getting tables from DuckDB for dataset {id}, duckdb_path: {dataset.duckdb_path}")
+            logger.info(f"Dataset schema_config: {dataset.schema_config}")
+            
+            # 获取数据集中的所有表名
+            table_names = dataset.schema_config or []
+            
+            if not table_names:
+                logger.warning(f"Dataset {id} has no tables in schema_config")
+                return []
+            
+            tables_info = []
+            for table_name in table_names:
+                try:
+                    logger.info(f"Getting schema for table: {table_name}")
+                    schema = DuckDBService.get_table_schema(dataset.duckdb_path, table_name)
+                    logger.info(f"Schema for {table_name}: {schema}")
+                    columns = [
+                        {
+                            'name': col['name'],
+                            'type': col['type'],
+                            'nullable': col.get('nullable', True),
+                            'default': None
+                        }
+                        for col in schema
+                    ]
+                    tables_info.append({
+                        'name': table_name,
+                        'columns': columns
+                    })
+                    logger.info(f"Successfully loaded table {table_name} with {len(columns)} columns")
+                except Exception as e:
+                    logger.error(f"Failed to get schema for table {table_name}: {e}", exc_info=True)
+                    tables_info.append({
+                        'name': table_name,
+                        'columns': []
+                    })
+            
+            logger.info(f"Returning {len(tables_info)} tables from DuckDB: {[t['name'] for t in tables_info]}")
+            return tables_info
+        else:
+            # 传统数据源：从 datasource 获取表信息
+            if not dataset.datasource:
+                raise HTTPException(status_code=400, detail="Dataset has no associated datasource")
+            
+            from app.services.db_inspector import DBInspector
+            from sqlalchemy import inspect as sa_inspect
+            
+            table_names = dataset.schema_config or []
+            if not table_names:
+                return []
+            
+            engine = DBInspector.get_engine(dataset.datasource)
+            inspector = sa_inspect(engine)
+            
+            tables_info = []
+            for table_name in table_names:
+                try:
+                    columns = inspector.get_columns(table_name)
+                    column_info = [
+                        {
+                            'name': col['name'],
+                            'type': str(col['type']),
+                            'nullable': col.get('nullable', True),
+                            'default': str(col.get('default')) if col.get('default') is not None else None
+                        }
+                        for col in columns
+                    ]
+                    tables_info.append({
+                        'name': table_name,
+                        'columns': column_info
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to get columns for table {table_name}: {e}")
+                    tables_info.append({
+                        'name': table_name,
+                        'columns': []
+                    })
+            
+            return tables_info
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get tables: {str(e)}")
 
 @router.put("/{id}/tables", response_model=DatasetResponse)
 def update_tables(
@@ -220,6 +331,8 @@ def add_business_term(
             definition=term_in.definition,
             db_session=db
         )
+        # 清理该数据集的缓存，避免返回过时的SQL
+        VannaManager.clear_cache(id)
     except Exception as e:
         # Rollback database if Vanna training fails
         db.delete(business_term)
@@ -320,6 +433,8 @@ def train_qa_pair(
             sql=qa_data.sql,
             db_session=db
         )
+        # 清理该数据集的缓存，避免返回过时的SQL
+        VannaManager.clear_cache(id)
         return {
             "message": "QA对训练成功",
             "question": qa_data.question,
@@ -361,8 +476,8 @@ def train_documentation(
         vn = VannaInstanceManager.get_legacy_vanna(id)
         vn.train(documentation=doc_data.content)
 
-        # 注意：缓存清理需要在异步上下文中处理
-        # VannaCacheService.clear_cache(id) 是异步方法
+        # 清理该数据集的缓存，避免返回过时的SQL
+        VannaManager.clear_cache(id)
 
         return {
             "message": "文档训练成功",
@@ -381,50 +496,129 @@ def analyze_relationships(
 ):
     """
     Analyze potential relationships between tables using AI.
-    应用数据隔离：需要验证 DataSource 的所有权
-    """
-    # Verify DataSource access
-    ds_query = db.query(DataSource).filter(DataSource.id == request.datasource_id)
-    ds_query = apply_ownership_filter(ds_query, DataSource, current_user)
-    datasource = ds_query.first()
+    支持两种数据源：
+    1. 传统数据源（MySQL/PostgreSQL）- 使用 VannaAnalystService
+    2. DuckDB 数据源 - 使用 RelationshipAnalyzer
     
-    if not datasource:
-        raise HTTPException(status_code=404, detail="DataSource not found or access denied")
+    判断逻辑：
+    - 优先查找包含指定表的 DuckDB 数据集（duckdb_path 不为空）
+    - 如果没有 DuckDB 数据集，再使用传统数据源分析
+    """
+    import logging
+    logger = logging.getLogger(__name__)
     
     if not request.table_names or len(request.table_names) == 0:
         raise HTTPException(status_code=400, detail="At least one table name is required")
     
-    # For AI analysis, we need a dataset context. 
-    # Create a temporary dataset or use an existing one?
-    # For simplicity, we'll create a temporary dataset ID or use datasource_id as hint
-    # Actually, VannaManager.analyze_relationships expects a dataset_id for LLM context
-    # Let's find or create a dataset for this datasource
+    # 🔧 修复：优先查找 DuckDB 数据集（多文件上传场景）
+    # 查找包含这些表的 DuckDB 数据集
+    duckdb_datasets = db.query(Dataset).filter(
+        Dataset.duckdb_path.isnot(None),
+        Dataset.owner_id == current_user.id
+    ).all()
     
-    # Option 1: Find first dataset for this datasource (if exists)
-    dataset_query = db.query(Dataset).filter(Dataset.datasource_id == request.datasource_id)
-    dataset_query = apply_ownership_filter(dataset_query, Dataset, current_user)
-    dataset = dataset_query.first()
+    # 找到包含所有指定表的 DuckDB 数据集
+    target_duckdb_dataset = None
+    for dataset in duckdb_datasets:
+        if dataset.schema_config and all(
+            table in dataset.schema_config for table in request.table_names
+        ):
+            target_duckdb_dataset = dataset
+            break
     
-    if not dataset:
-        # Option 2: Create a temporary dataset for analysis
-        # This is a bit heavy - alternative is to make analyze_relationships work without dataset_id
-        # For now, we require an existing dataset
-        raise HTTPException(
-            status_code=400, 
-            detail="No dataset found for this datasource. Please create a dataset first."
-        )
+    # 方案1：如果找到 DuckDB 数据集，使用 RelationshipAnalyzer
+    if target_duckdb_dataset:
+        try:
+            logger.info(
+                f"Using RelationshipAnalyzer for DuckDB dataset {target_duckdb_dataset.id}, "
+                f"tables: {request.table_names}"
+            )
+            
+            # 使用 RelationshipAnalyzer 分析
+            relationships = RelationshipAnalyzer.analyze_relationships(
+                dataset_id=target_duckdb_dataset.id,
+                db_path=target_duckdb_dataset.duckdb_path,
+                table_names=request.table_names
+            )
+            
+            # 转换为 API 响应格式
+            edges = [
+                EdgeResponse(
+                    source=rel['source'],
+                    target=rel['target'],
+                    source_col=rel['source_col'],
+                    target_col=rel['target_col'],
+                    type=rel.get('type', 'left'),
+                    confidence=f"{rel.get('confidence', 'medium')} ({rel.get('data_overlap', 0):.1f}% overlap)"
+                )
+                for rel in relationships
+            ]
+            
+            # 获取节点信息（表结构）
+            nodes = []
+            for table_name in request.table_names:
+                schema = DuckDBService.get_table_schema(target_duckdb_dataset.duckdb_path, table_name)
+                fields = [
+                    FieldResponse(
+                        name=col['name'],
+                        type=col['type'],
+                        nullable=col.get('nullable', True)
+                    )
+                    for col in schema
+                ]
+                nodes.append(NodeResponse(table_name=table_name, fields=fields))
+            
+            return AnalyzeRelationshipsResponse(edges=edges, nodes=nodes)
+        
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"DuckDB relationship analysis failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
     
-    try:
-        result = VannaAnalystService.analyze_relationships(
-            dataset_id=dataset.id,
-            table_names=request.table_names,
-            db_session=db
-        )
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
+    # 方案2：没有 DuckDB 数据集，使用传统数据源分析
+    if request.datasource_id:
+        # Verify DataSource access
+        ds_query = db.query(DataSource).filter(DataSource.id == request.datasource_id)
+        ds_query = apply_ownership_filter(ds_query, DataSource, current_user)
+        datasource = ds_query.first()
+        
+        if not datasource:
+            raise HTTPException(status_code=404, detail="DataSource not found or access denied")
+        
+        # Find dataset for this datasource
+        dataset_query = db.query(Dataset).filter(Dataset.datasource_id == request.datasource_id)
+        dataset_query = apply_ownership_filter(dataset_query, Dataset, current_user)
+        dataset = dataset_query.first()
+        
+        if not dataset:
+            raise HTTPException(
+                status_code=400, 
+                detail="No dataset found for this datasource. Please create a dataset first."
+            )
+        
+        try:
+            logger.info(
+                f"Using VannaAnalystService for traditional datasource, "
+                f"dataset_id: {dataset.id}, datasource_id: {request.datasource_id}"
+            )
+            
+            result = VannaAnalystService.analyze_relationships(
+                dataset_id=dataset.id,
+                table_names=request.table_names,
+                db_session=db
+            )
+            return result
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
+    
+    # 没有找到任何可用的数据集
+    raise HTTPException(
+        status_code=404,
+        detail="未找到包含指定表的数据集，请先上传数据或连接数据源"
+    )
 
 
 def _deduplicate_sql_columns(sql: str) -> str:
@@ -805,29 +999,87 @@ def create_view(
 ):
     """
     Create or replace a database view based on the provided SQL.
-    This materializes the wide table in the database for better query performance.
-    应用数据隔离：需要验证 DataSource 的所有权
+    支持传统数据源和DuckDB数据集两种模式：
+    - 传统模式：需要 datasource_id
+    - DuckDB模式：需要 dataset_id
     """
-    # Verify DataSource access
-    ds_query = db.query(DataSource).filter(DataSource.id == request.datasource_id)
-    ds_query = apply_ownership_filter(ds_query, DataSource, current_user)
-    datasource = ds_query.first()
+    # #region agent log
+    import json; open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').write(json.dumps({"location": "dataset.py:create_view:entry", "message": "create_view called", "data": {"datasource_id": request.datasource_id, "dataset_id": request.dataset_id, "view_name": request.view_name, "user_id": current_user.id, "is_superuser": current_user.is_superuser}, "timestamp": __import__('time').time() * 1000, "sessionId": "debug-session", "hypothesisId": "H1,H3"}) + '\n'); open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').close()
+    # #endregion
     
-    if not datasource:
-        raise HTTPException(status_code=404, detail="DataSource not found or access denied")
+    datasource = None
+    dataset = None
     
-    # 额外检查：公共资源只有超级管理员可以创建视图
-    if datasource.owner_id is None and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Cannot create views on public datasources")
+    # 模式1: DuckDB数据集模式
+    if request.dataset_id:
+        # #region agent log
+        import json; open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').write(json.dumps({"location": "dataset.py:create_view:duckdb_mode", "message": "using DuckDB mode", "data": {"dataset_id": request.dataset_id}, "timestamp": __import__('time').time() * 1000, "sessionId": "debug-session", "hypothesisId": "H1"}) + '\n'); open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').close()
+        # #endregion
+        
+        # 查找并验证Dataset权限
+        dataset_query = db.query(Dataset).filter(Dataset.id == request.dataset_id)
+        dataset_query = apply_ownership_filter(dataset_query, Dataset, current_user)
+        dataset = dataset_query.first()
+        
+        if not dataset:
+            raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+        
+        # 【修复】检查是否为DuckDB数据集，如果不是且有datasource_id，则降级到传统模式
+        if not dataset.duckdb_path:
+            if dataset.datasource_id:
+                # 降级到传统数据源模式
+                request.datasource_id = dataset.datasource_id
+                dataset = None  # 清空dataset，使用datasource模式
+            else:
+                raise HTTPException(status_code=400, detail="此数据集既不是DuckDB数据集，也没有关联数据源")
+    
+    # 模式2: 传统数据源模式
+    if request.datasource_id and not dataset:
+        # #region agent log
+        import json; open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').write(json.dumps({"location": "dataset.py:create_view:datasource_mode", "message": "using DataSource mode", "data": {"datasource_id": request.datasource_id}, "timestamp": __import__('time').time() * 1000, "sessionId": "debug-session", "hypothesisId": "H1"}) + '\n'); open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').close()
+        # #endregion
+        
+        # 查找并验证DataSource权限
+        ds_query = db.query(DataSource).filter(DataSource.id == request.datasource_id)
+        ds_query = apply_ownership_filter(ds_query, DataSource, current_user)
+        datasource = ds_query.first()
+        
+        if not datasource:
+            raise HTTPException(status_code=404, detail="DataSource not found or access denied")
+        
+        # 额外检查：公共资源只有超级管理员可以创建视图
+        if datasource.owner_id is None and not current_user.is_superuser:
+            raise HTTPException(status_code=403, detail="Cannot create views on public datasources")
+    
+    else:
+        raise HTTPException(status_code=400, detail="必须提供 datasource_id 或 dataset_id")
     
     # Validate view_name (prevent SQL injection)
     import re
     if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', request.view_name):
         raise HTTPException(status_code=400, detail="Invalid view name. Use only alphanumeric and underscore.")
     
-    # Validate SQL (basic check - should be SELECT)
-    if not request.sql.strip().upper().startswith('SELECT'):
+    # Validate SQL (增强安全检查)
+    sql_upper = request.sql.strip().upper()
+    
+    # 1. 检查必须以 SELECT 开头
+    if not sql_upper.startswith('SELECT'):
         raise HTTPException(status_code=400, detail="SQL must be a SELECT query")
+    
+    # 2. 检查危险关键字
+    DANGEROUS_KEYWORDS = [
+        'DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE', 
+        'ALTER', 'CREATE TABLE', 'CREATE INDEX', 'EXEC', 
+        'EXECUTE', 'GRANT', 'REVOKE'
+    ]
+    
+    for keyword in DANGEROUS_KEYWORDS:
+        # 使用单词边界检查，避免误判（如 "SELECTED" 不应匹配 "SELECT"）
+        if re.search(r'\b' + keyword + r'\b', sql_upper):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"SQL 不允许包含危险语句: {keyword}"
+            )
     
     try:
         from app.services.db_inspector import DBInspector
@@ -835,62 +1087,101 @@ def create_view(
         logger = logging.getLogger(__name__)
 
         logger.info(f"Creating view: {request.view_name}")
-        logger.info(f"Datasource ID: {request.datasource_id}")
-        logger.info(f"Original SQL: {request.sql[:200]}...")
 
         # 自动处理重复列名问题
         processed_sql = _deduplicate_sql_columns(request.sql)
         logger.info(f"Processed SQL: {processed_sql[:200]}...")
 
-        engine = DBInspector.get_engine(datasource)
-
-        # 性能预检：分析 SQL 执行计划
-        perf_analysis = _analyze_sql_performance(engine, processed_sql, datasource.type)
-        if perf_analysis["warnings"]:
-            logger.warning(f"SQL 性能警告: {perf_analysis['warnings']}")
-
-        # Create or replace view
-        # Note: Syntax varies by database type
-        if datasource.type == 'postgresql':
+        # 根据模式选择不同的执行引擎
+        if dataset and dataset.duckdb_path:
+            # DuckDB模式
+            logger.info(f"Using DuckDB at: {dataset.duckdb_path}")
+            
+            # #region agent log
+            import json; open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').write(json.dumps({"location": "dataset.py:create_view:duckdb_execution", "message": "creating view in DuckDB", "data": {"duckdb_path": dataset.duckdb_path}, "timestamp": __import__('time').time() * 1000, "sessionId": "debug-session", "hypothesisId": "H1"}) + '\n'); open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').close()
+            # #endregion
+            
+            import duckdb
+            
+            # DuckDB 使用 CREATE OR REPLACE VIEW 语法
             create_view_sql = f"CREATE OR REPLACE VIEW {request.view_name} AS {processed_sql}"
-        elif datasource.type == 'mysql':
-            # MySQL requires dropping the view first if it exists
-            drop_view_sql = f"DROP VIEW IF EXISTS {request.view_name}"
-            create_view_sql = f"CREATE VIEW {request.view_name} AS {processed_sql}"
-
-            logger.info(f"Executing DROP VIEW: {drop_view_sql}")
-            with engine.connect() as conn:
-                conn.execute(text(drop_view_sql))
+            
+            logger.info(f"Executing DuckDB CREATE VIEW: {create_view_sql[:200]}...")
+            
+            # 执行创建视图（直接使用duckdb连接）
+            conn = duckdb.connect(dataset.duckdb_path)
+            try:
+                conn.execute(create_view_sql)
                 conn.commit()
-        else:
-            # Default to CREATE OR REPLACE
-            create_view_sql = f"CREATE OR REPLACE VIEW {request.view_name} AS {processed_sql}"
-        
-        logger.info(f"Executing CREATE VIEW: {create_view_sql[:200]}...")
-        
-        # Execute create view
-        with engine.connect() as conn:
-            conn.execute(text(create_view_sql))
-            conn.commit()
-        
-        logger.info(f"View {request.view_name} created successfully")
-
-        # 构建响应，包含性能警告信息
-        response = {
-            "message": f"视图 {request.view_name} 创建成功",
-            "view_name": request.view_name,
-            "performance": {
-                "warnings": perf_analysis.get("warnings", []),
-                "estimated_rows": perf_analysis.get("estimated_rows", 0),
-                "has_full_scan": perf_analysis.get("has_full_scan", False)
+                
+                # #region agent log
+                import json; open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').write(json.dumps({"location": "dataset.py:create_view:duckdb_success", "message": "DuckDB view created successfully", "data": {"view_name": request.view_name}, "timestamp": __import__('time').time() * 1000, "sessionId": "debug-session", "hypothesisId": "H1"}) + '\n'); open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').close()
+                # #endregion
+            finally:
+                conn.close()
+            
+            logger.info(f"DuckDB view {request.view_name} created successfully")
+            
+            # DuckDB模式的响应（暂不分析性能）
+            return {
+                "message": f"视图 {request.view_name} 创建成功（DuckDB）",
+                "view_name": request.view_name,
+                "dataset_id": dataset.id
             }
-        }
+        
+        else:
+            # 传统数据源模式
+            logger.info(f"Using DataSource ID: {request.datasource_id}")
+            
+            engine = DBInspector.get_engine(datasource)
 
-        # 如果有警告，在消息中提示
-        if perf_analysis.get("warnings"):
-            response["message"] += "（有性能警告，请查看详情）"
+            # 性能预检：分析 SQL 执行计划
+            perf_analysis = _analyze_sql_performance(engine, processed_sql, datasource.type)
+            if perf_analysis["warnings"]:
+                logger.warning(f"SQL 性能警告: {perf_analysis['warnings']}")
 
-        return response
+            # Create or replace view
+            # Note: Syntax varies by database type
+            if datasource.type == 'postgresql':
+                create_view_sql = f"CREATE OR REPLACE VIEW {request.view_name} AS {processed_sql}"
+            elif datasource.type == 'mysql':
+                # MySQL requires dropping the view first if it exists
+                drop_view_sql = f"DROP VIEW IF EXISTS {request.view_name}"
+                create_view_sql = f"CREATE VIEW {request.view_name} AS {processed_sql}"
+
+                logger.info(f"Executing DROP VIEW: {drop_view_sql}")
+                with engine.connect() as conn:
+                    conn.execute(text(drop_view_sql))
+                    conn.commit()
+            else:
+                # Default to CREATE OR REPLACE
+                create_view_sql = f"CREATE OR REPLACE VIEW {request.view_name} AS {processed_sql}"
+            
+            logger.info(f"Executing CREATE VIEW: {create_view_sql[:200]}...")
+            
+            # Execute create view
+            with engine.connect() as conn:
+                conn.execute(text(create_view_sql))
+                conn.commit()
+            
+            logger.info(f"View {request.view_name} created successfully")
+
+            # 构建响应，包含性能警告信息
+            response = {
+                "message": f"视图 {request.view_name} 创建成功",
+                "view_name": request.view_name,
+                "performance": {
+                    "warnings": perf_analysis.get("warnings", []),
+                    "estimated_rows": perf_analysis.get("estimated_rows", 0),
+                    "has_full_scan": perf_analysis.get("has_full_scan", False)
+                }
+            }
+            
+            # 如果有警告，在消息中提示
+            if perf_analysis.get("warnings"):
+                response["message"] += "（有性能警告，请查看详情）"
+            
+            return response
         
     except Exception as e:
         import logging
@@ -1116,7 +1407,24 @@ def delete_dataset(
         logger = logging.getLogger(__name__)
         logger.warning(f"Failed to delete collection for dataset {id}: {e}")
     
-    # 2. 删除数据库记录（级联删除会自动删除 business_terms 和 training_logs）
+    # 2. 删除所有关联的外键记录（修复外键约束错误）
+    from app.models.metadata import ChatMessage, ChatSession, DashboardCard, ComputedMetric
+    
+    # 删除关联的聊天消息
+    db.query(ChatMessage).filter(ChatMessage.dataset_id == id).delete()
+    
+    # 删除关联的聊天会话（将 dataset_id 设为 NULL，因为它是可选的）
+    db.query(ChatSession).filter(ChatSession.dataset_id == id).update(
+        {"dataset_id": None}
+    )
+    
+    # 删除关联的看板卡片
+    db.query(DashboardCard).filter(DashboardCard.dataset_id == id).delete()
+    
+    # 删除关联的计算指标
+    db.query(ComputedMetric).filter(ComputedMetric.dataset_id == id).delete()
+    
+    # 3. 删除数据库记录（级联删除会自动删除 business_terms 和 training_logs）
     db.delete(dataset)
     db.commit()
     
@@ -1181,6 +1489,10 @@ def update_modeling_config(
         try:
             logger.info(f"Training relationships from {len(new_edges)} edges for dataset {id}")
             train_result = _train_relationships_from_edges(id, new_edges, db)
+
+            # 如果有关系被训练，清理缓存
+            if train_result["trained_count"] > 0:
+                VannaManager.clear_cache(id)
 
             # 根据验证结果构建响应
             if train_result["success"]:
@@ -1422,3 +1734,151 @@ async def get_suggested_questions(
         logger = logging.getLogger(__name__)
         logger.error(f"Failed to generate suggested questions: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"生成推荐问题失败: {str(e)}")
+
+
+# ==================== 计算指标 CRUD ====================
+
+from pydantic import BaseModel
+
+class ComputedMetricCreate(BaseModel):
+    """Create computed metric request"""
+    name: str
+    formula: str
+    description: Optional[str] = None
+
+class ComputedMetricResponse(BaseModel):
+    """Computed metric response"""
+    id: int
+    dataset_id: int
+    name: str
+    formula: str
+    description: Optional[str] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+@router.get("/{id}/metrics", response_model=List[ComputedMetricResponse])
+def get_computed_metrics(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get all computed metrics for a dataset.
+    应用数据隔离：只能查看自己的数据集的指标
+    """
+    # 验证 dataset 访问权限
+    dataset_query = db.query(Dataset).filter(Dataset.id == id)
+    dataset_query = apply_ownership_filter(dataset_query, Dataset, current_user)
+    dataset = dataset_query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    # 获取所有计算指标
+    metrics = db.query(ComputedMetric).filter(ComputedMetric.dataset_id == id).all()
+    return metrics
+
+
+@router.post("/{id}/metrics", response_model=ComputedMetricResponse)
+def create_computed_metric(
+    id: int,
+    metric_in: ComputedMetricCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Create a new computed metric for a dataset.
+    应用数据隔离：需要验证 Dataset 的所有权
+    """
+    # 验证 dataset 访问权限
+    dataset_query = db.query(Dataset).filter(Dataset.id == id)
+    dataset_query = apply_ownership_filter(dataset_query, Dataset, current_user)
+    dataset = dataset_query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found or access denied")
+    
+    # 创建计算指标
+    metric = ComputedMetric(
+        dataset_id=id,
+        name=metric_in.name,
+        formula=metric_in.formula,
+        description=metric_in.description,
+        owner_id=current_user.id
+    )
+    db.add(metric)
+    db.commit()
+    db.refresh(metric)
+    
+    return metric
+
+
+@router.put("/metrics/{metric_id}", response_model=ComputedMetricResponse)
+def update_computed_metric(
+    metric_id: int,
+    metric_in: ComputedMetricCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Update a computed metric.
+    应用数据隔离：只能更新自己的指标
+    """
+    # 查找指标
+    metric = db.query(ComputedMetric).filter(ComputedMetric.id == metric_id).first()
+    
+    if not metric:
+        raise HTTPException(status_code=404, detail="Metric not found")
+    
+    # 验证权限：需要验证 dataset 的访问权限
+    dataset_query = db.query(Dataset).filter(Dataset.id == metric.dataset_id)
+    dataset_query = apply_ownership_filter(dataset_query, Dataset, current_user)
+    dataset = dataset_query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=403, detail="Access denied to this metric")
+    
+    # 更新指标
+    metric.name = metric_in.name
+    metric.formula = metric_in.formula
+    metric.description = metric_in.description
+    metric.updated_at = datetime.utcnow()
+    
+    db.commit()
+    db.refresh(metric)
+    
+    return metric
+
+
+@router.delete("/metrics/{metric_id}")
+def delete_computed_metric(
+    metric_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Delete a computed metric.
+    应用数据隔离：只能删除自己的指标
+    """
+    # 查找指标
+    metric = db.query(ComputedMetric).filter(ComputedMetric.id == metric_id).first()
+    
+    if not metric:
+        raise HTTPException(status_code=404, detail="Metric not found")
+    
+    # 验证权限：需要验证 dataset 的访问权限
+    dataset_query = db.query(Dataset).filter(Dataset.id == metric.dataset_id)
+    dataset_query = apply_ownership_filter(dataset_query, Dataset, current_user)
+    dataset = dataset_query.first()
+    
+    if not dataset:
+        raise HTTPException(status_code=403, detail="Access denied to this metric")
+    
+    # 删除指标
+    db.delete(metric)
+    db.commit()
+    
+    return {"message": f"指标 {metric.name} 已删除"}

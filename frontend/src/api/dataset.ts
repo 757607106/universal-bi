@@ -41,6 +41,11 @@ export const updateDatasetTables = async (id: number, tables: string[]) => {
   return await http.put<Dataset, { schema_config: string[] }>(`/datasets/${id}/tables`, { schema_config: tables })
 }
 
+// 获取数据集的表信息（支持 DuckDB 和传统数据源）
+export const getDatasetTables = async (id: number) => {
+  return await http.get<any[], any>(`/datasets/${id}/tables`)
+}
+
 export const trainDataset = async (id: number) => {
   return await http.post<any, any>(`/datasets/${id}/train`)
 }

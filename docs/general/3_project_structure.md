@@ -1,7 +1,7 @@
 # Universal BI 项目完整结构文档
 
-> **文档版本**: v1.2  
-> **最后更新**: 2026-01-08  
+> **文档版本**: v1.3  
+> **最后更新**: 2026-01-09  
 > 本文档详细描述了 Universal BI 项目的完整目录结构、各模块职责及关键技术实现。
 
 ## 📁 根目录结构
@@ -90,7 +90,8 @@ backend/
 │   └── train_qa_fix.py            # QA 训练脚本
 ├── tests/                         # 测试文件
 │   ├── manual_scripts/            # 手动测试脚本
-│   └── test_*.py                  # 自动化测试
+│   ├── test_comprehensive_chat.py # 聊天接口全面测试 ✨NEW
+│   └── test_*.py                  # 其他自动化测试
 ├── clear_cache.py                 # Redis 缓存清理工具
 ├── init_db.py                     # 数据库初始化脚本
 ├── monitor_redis.py               # Redis 监控脚本
@@ -120,8 +121,8 @@ backend/
 |------|------|
 | `base.py` | VannaLegacy 基础类定义 |
 | `instance_manager.py` | Vanna 实例生命周期管理（单例、缓存） |
-| `training_service.py` | DDL/文档/QA 训练功能 |
-| `sql_generator.py` | SQL 生成、执行、多轮推理 |
+| `training_service.py` | DDL/文档/QA 训练功能、**智能示例生成** ✨ |
+| `sql_generator.py` | SQL 生成、执行、多轮推理、**智能错误恢复** ✨ |
 | `cache_service.py` | Redis 缓存读写 |
 | `analyst_service.py` | 业务分析、数据洞察 |
 | `training_data_service.py` | 训练数据 CRUD 操作 |
@@ -258,6 +259,7 @@ Routes:
 | `SCHEMA_INJECTION.md` | Schema 注入 |
 | `CACHE_CONTROL_TESTING.md` | 缓存控制测试 |
 | `TRAINING_CONTROL_GUIDE.md` | 训练控制指南 |
+| `CHAT_INTERFACE_FIX.md` | 聊天接口修复文档 ✨NEW |
 
 ### 前端文档 (`docs/frontend/`)
 

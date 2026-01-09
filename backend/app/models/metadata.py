@@ -39,7 +39,7 @@ class Dataset(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), index=True)
-    datasource_id = Column(Integer, ForeignKey("datasources.id"))
+    datasource_id = Column(Integer, ForeignKey("datasources.id"), nullable=True)  # 对于 DuckDB 数据集，可为 NULL
     collection_name = Column(String(255), unique=True, index=True)
     schema_config = Column(JSON)  # e.g. ["users", "orders"]
     status = Column(String(50), default="pending")  # pending, training, completed, failed, paused
@@ -47,6 +47,7 @@ class Dataset(Base):
     process_rate = Column(Integer, default=0, comment="训练进度百分比 0-100")
     error_msg = Column(Text, nullable=True)
     last_train_at = Column(DateTime, nullable=True)
+    duckdb_path = Column(String(500), nullable=True, comment="DuckDB 数据库文件路径，用于多表分析")
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # 为 None 则为公共资源
     
     datasource = relationship("DataSource", back_populates="datasets")

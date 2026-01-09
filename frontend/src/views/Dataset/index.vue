@@ -11,6 +11,10 @@
             <el-icon class="mr-2"><Upload /></el-icon>
             上传Excel/CSV
           </el-button>
+          <el-button @click="handleGoMultiUpload" class="bg-purple-600 shadow-lg shadow-purple-500/30 hover:bg-purple-500 border-none text-white">
+            <el-icon class="mr-2"><FolderAdd /></el-icon>
+            批量上传多表
+          </el-button>
           <el-button type="primary" @click="wizardVisible = true" class="bg-blue-600 shadow-lg shadow-blue-500/30 hover:bg-blue-500 border-none">
             <el-icon class="mr-2"><Plus /></el-icon>
             新建数据集
@@ -166,7 +170,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Plus, Upload, Files, Loading, MagicStick, View, CircleCheck, CircleClose, VideoPause, Clock, Delete, Collection, TrendCharts, More, Refresh, ChatDotRound } from '@element-plus/icons-vue'
+import { Plus, Upload, Files, Loading, MagicStick, View, CircleCheck, CircleClose, VideoPause, Clock, Delete, Collection, TrendCharts, More, Refresh, ChatDotRound, FolderAdd } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getDatasetList, trainDataset, deleteDataset, type Dataset } from '@/api/dataset'
 import DatasetWizard from './components/DatasetWizard.vue'
@@ -203,7 +207,8 @@ const checkPolling = (list: Dataset[]) => {
   // 【修复】只有在有训练任务且轮询未开启时才启动
   if (hasTraining && !pollingTimer) {
     console.log('检测到训练任务，开启轮询')
-    pollingTimer = setInterval(fetchDatasets, 3000)
+    // 【优化】将轮询间隔从3秒增加到5秒，减少后端压力
+    pollingTimer = setInterval(fetchDatasets, 5000)
   } 
   // 【修复】没有训练任务且轮询开启时才关闭
   else if (!hasTraining && pollingTimer) {
@@ -254,6 +259,11 @@ const handleOpenMetricManager = (dataset: Dataset) => {
 // 跳转到问答页面
 const handleGoChat = (dataset: Dataset) => {
   router.push({ path: '/chat', query: { dataset: dataset.id.toString() } })
+}
+
+// 跳转到批量上传页面
+const handleGoMultiUpload = () => {
+  router.push({ name: 'dataset-multi-upload' })
 }
 
 // 处理更多操作菜单

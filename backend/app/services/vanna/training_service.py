@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.metadata import Dataset, TrainingLog, BusinessTerm
 from app.core.logger import get_logger
 from app.services.db_inspector import DBInspector
+from app.services.duckdb_service import DuckDBService
 from app.services.vanna.base import TrainingStoppedException
 from app.services.vanna.instance_manager import VannaInstanceManager
 from app.services.vanna.cache_service import VannaCacheService
@@ -111,32 +112,63 @@ class VannaTrainingService:
 
             cls._checkpoint_and_check_interrupt(db_session, dataset_id, 0, "训练启动")
 
-            # === Step 1: 检查数据库连接和提取 DDL (0-10%) ===
-            datasource = dataset.datasource
-            if not datasource:
-                raise ValueError("DataSource associated with dataset not found")
-
-            cls._checkpoint_and_check_interrupt(db_session, dataset_id, 5, "检查数据源连接")
-
-            # 提取 DDLs
+            # === Step 1: 检查数据源并提取 DDL (0-10%) ===
+            # 判断是 DuckDB 数据集还是传统数据源
+            is_duckdb = dataset.duckdb_path is not None
+            
+            # 用于记录DDL提取结果
             ddls = []
-            for i, table_name in enumerate(table_names):
-                try:
-                    ddl = DBInspector.get_table_ddl(datasource, table_name)
-                    ddls.append((table_name, ddl))
+            failed_tables = []  # 记录失败的表名
+            
+            if is_duckdb:
+                cls._checkpoint_and_check_interrupt(db_session, dataset_id, 5, "检查 DuckDB 数据库")
+                
+                # 从 DuckDB 提取 DDLs
+                for i, table_name in enumerate(table_names):
+                    try:
+                        ddl = DuckDBService.get_table_ddl(dataset.duckdb_path, table_name)
+                        ddls.append((table_name, ddl))
+                        
+                        progress = 5 + int((i + 1) / len(table_names) * 5)
+                        cls._checkpoint_and_check_interrupt(
+                            db_session, dataset_id, progress,
+                            f"提取表 DDL: {table_name} ({i+1}/{len(table_names)})"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to get DDL for {table_name}: {e}")
+                        failed_tables.append(f"{table_name} ({str(e)[:50]})")
+            else:
+                # 传统数据源
+                datasource = dataset.datasource
+                if not datasource:
+                    raise ValueError("DataSource associated with dataset not found")
 
-                    # 每处理一个表，更新一次进度
-                    progress = 5 + int((i + 1) / len(table_names) * 5)
-                    cls._checkpoint_and_check_interrupt(
-                        db_session, dataset_id, progress,
-                        f"提取表 DDL: {table_name} ({i+1}/{len(table_names)})"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to get DDL for {table_name}: {e}")
-                    # 继续处理其他表
+                cls._checkpoint_and_check_interrupt(db_session, dataset_id, 5, "检查数据源连接")
+
+                # 提取 DDLs
+                for i, table_name in enumerate(table_names):
+                    try:
+                        ddl = DBInspector.get_table_ddl(datasource, table_name)
+                        ddls.append((table_name, ddl))
+
+                        # 每处理一个表，更新一次进度
+                        progress = 5 + int((i + 1) / len(table_names) * 5)
+                        cls._checkpoint_and_check_interrupt(
+                            db_session, dataset_id, progress,
+                            f"提取表 DDL: {table_name} ({i+1}/{len(table_names)})"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to get DDL for {table_name}: {e}")
+                        failed_tables.append(f"{table_name} ({str(e)[:50]})")
+                        # 继续处理其他表
 
             if not ddls:
                 raise ValueError("没有成功提取任何表的 DDL")
+            
+            # 如果有部分表失败，记录到 error_msg
+            if failed_tables:
+                dataset.error_msg = f"部分表DDL提取失败: {', '.join(failed_tables)}"
+                db_session.commit()
 
             # === Step 2: 初始化 Vanna 实例 (10%) ===
             cls._checkpoint_and_check_interrupt(db_session, dataset_id, 10, "初始化 Vanna 实例")
@@ -194,7 +226,7 @@ class VannaTrainingService:
 
             # 为主要表生成基本查询示例
             example_queries = []
-            for table_name, _ in ddls[:3]:  # 只为前3个表生成示例
+            for table_name, ddl in ddls[:3]:  # 只为前3个表生成示例
                 example_queries.append((
                     f"查询 {table_name} 表的所有数据",
                     f"SELECT * FROM {table_name} LIMIT 100"
@@ -203,6 +235,47 @@ class VannaTrainingService:
                     f"统计 {table_name} 表的总数",
                     f"SELECT COUNT(*) as total FROM {table_name}"
                 ))
+                
+                # 根据表结构生成针对性示例
+                # 提取列名（从DDL中简单解析）
+                try:
+                    # 匹配列定义（简化版本）
+                    import re
+                    column_pattern = r'^\s*`?(\w+)`?\s+\w+'
+                    columns = []
+                    for line in ddl.split('\n'):
+                        match = re.match(column_pattern, line.strip())
+                        if match and match.group(1).upper() not in ['PRIMARY', 'KEY', 'CONSTRAINT', 'FOREIGN', 'INDEX']:
+                            columns.append(match.group(1))
+                    
+                    # 如果有列，生成更多示例
+                    if len(columns) >= 2:
+                        # 第一个列作为示例
+                        first_col = columns[0]
+                        example_queries.append((
+                            f"按{first_col}分组统计{table_name}",
+                            f"SELECT {first_col}, COUNT(*) as count FROM {table_name} GROUP BY {first_col} LIMIT 100"
+                        ))
+                        
+                        # 如果列名包含常见模式，添加相应示例
+                        for col in columns:
+                            col_lower = col.lower()
+                            # 日期相关
+                            if 'date' in col_lower or 'time' in col_lower:
+                                example_queries.append((
+                                    f"按{col}排序查看{table_name}最新记录",
+                                    f"SELECT * FROM {table_name} ORDER BY {col} DESC LIMIT 10"
+                                ))
+                                break
+                            # 金额/数量相关
+                            elif 'amount' in col_lower or 'quantity' in col_lower or 'price' in col_lower or 'total' in col_lower:
+                                example_queries.append((
+                                    f"查询{table_name}中{col}最大的记录",
+                                    f"SELECT * FROM {table_name} ORDER BY {col} DESC LIMIT 10"
+                                ))
+                                break
+                except Exception as parse_err:
+                    logger.debug(f"Failed to parse DDL for {table_name}: {parse_err}")
 
             for i, (question, sql) in enumerate(example_queries):
                 vn.train(question=question, sql=sql)

@@ -27,6 +27,16 @@
           <el-icon><Select /></el-icon>
           <span class="ml-1">保存布局</span>
         </el-button>
+        <el-button 
+          type="success" 
+          size="small" 
+          @click="handleConfirmAndTrain" 
+          :disabled="nodes.length === 0 || edges.length === 0"
+          class="!bg-gradient-to-r !from-purple-500 !to-indigo-600 hover:!from-purple-400 hover:!to-indigo-500 !text-white !border-none"
+        >
+          <el-icon><Check /></el-icon>
+          <span class="ml-1">确认并训练</span>
+        </el-button>
       </div>
     </div>
 
@@ -372,7 +382,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, markRaw, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, markRaw, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -398,6 +408,7 @@ import {
   getDataset,
   trainDataset,
   updateDatasetTables,
+  getDatasetTables,
   type RelationshipEdge,
   type TableNode as TableNodeType
 } from '@/api/dataset'
@@ -449,19 +460,47 @@ const initFromRoute = async () => {
   const datasetId = datasetIdFromPath || datasetIdFromQuery
   
   let selectedTableNames: string[] = []
+  let hasExistingModelingConfig = false
   
   if (datasetId) {
     currentDatasetId.value = parseInt(datasetId)
     // 加载 dataset 信息，获取 datasource_id 和 modeling_config
-    selectedTableNames = await loadDatasetConfig() || []
+    const configResult = await loadDatasetConfig()
+    selectedTableNames = configResult?.selectedTableNames || []
+    hasExistingModelingConfig = configResult?.hasModelingConfig || false
   } else if (datasourceId) {
     currentDatasourceId.value = parseInt(datasourceId)
   }
   
-  // 加载表列表（确保在 datasource_id 设置后执行）
-  // 【修复】传入选中的表名列表进行过滤
-  if (currentDatasourceId.value) {
+  // 加载表列表（支持 DuckDB 和传统数据源）
+  // 【修复】DuckDB数据集通过 dataset_id 加载，传统数据源通过 datasource_id 加载
+  if (currentDatasetId.value || currentDatasourceId.value) {
     await loadTables(selectedTableNames)
+    
+    // 【修改】如果是新创建的数据集（没有建模配置），只自动添加表到画布，不自动触发 AI 分析
+    if (selectedTableNames.length > 0 && !hasExistingModelingConfig) {
+      console.log('New dataset detected, auto-adding tables to canvas')
+      
+      // 自动添加所有表到画布
+      await nextTick() // 等待表列表渲染完成
+      
+      selectedTableNames.forEach((tableName, index) => {
+        const table = availableTables.value.find(t => t.name === tableName)
+        if (table) {
+          // 自动布局：每个表横向排列，间隔 400px
+          const xPos = 100 + (index % 3) * 400
+          const yPos = 100 + Math.floor(index / 3) * 300
+          handleAddTable(table, { x: xPos, y: yPos })
+        }
+      })
+      
+      // 提示用户可以手动触发 AI 分析
+      setTimeout(() => {
+        if (nodes.value.length >= 2) {
+          ElMessage.info('表已添加到画布，请点击「AI 自动分析关联」按钮来分析表关系')
+        }
+      }, 1000)
+    }
   } else {
     console.warn('No datasource_id available, skipping table loading')
   }
@@ -469,16 +508,15 @@ const initFromRoute = async () => {
 
 // 加载数据集配置（包括建模数据）
 const loadDatasetConfig = async () => {
-  if (!currentDatasetId.value) return
+  if (!currentDatasetId.value) return { selectedTableNames: [], hasModelingConfig: false }
   
   try {
     const dataset = await getDataset(currentDatasetId.value)
     console.log('Loaded dataset:', dataset)
     
-    // 设置 datasource_id
-    if (dataset.datasource_id) {
-      currentDatasourceId.value = dataset.datasource_id
-    }
+    // 🔧 修复：正确设置 datasource_id（包括 null 值）
+    // 对于 DuckDB 数据集，datasource_id 为 null
+    currentDatasourceId.value = dataset.datasource_id || null
     
     // 设置数据集名称
     if (dataset.name) {
@@ -487,9 +525,10 @@ const loadDatasetConfig = async () => {
     
     // 【修复】保存 schema_config，用于过滤表列表
     const selectedTableNames = dataset.schema_config || []
+    const hasModelingConfig = !!(dataset.modeling_config && typeof dataset.modeling_config === 'object' && Object.keys(dataset.modeling_config).length > 0)
     
     // 恢复建模数据（只有在 modeling_config 不为 null 且有内容时才加载）
-    if (dataset.modeling_config && typeof dataset.modeling_config === 'object' && Object.keys(dataset.modeling_config).length > 0) {
+    if (hasModelingConfig) {
       console.log('Restoring modeling config:', dataset.modeling_config)
       
       // 使用 fromObject 恢复完整状态（包括 viewport）
@@ -541,41 +580,58 @@ const loadDatasetConfig = async () => {
       }
     }
     
-    // 【修复】返回选中的表名列表
-    return selectedTableNames
+    // 【修复】返回选中的表名列表和是否有建模配置
+    return { selectedTableNames, hasModelingConfig }
   } catch (error: any) {
     console.error('Failed to load dataset config:', error)
     // 不弹出错误提示，静默失败
-    return []
+    return { selectedTableNames: [], hasModelingConfig: false }
   }
 }
 
 // 加载数据源的表列表
 const loadTables = async (selectedTableNames?: string[]) => {
-  if (!currentDatasourceId.value) {
-    console.warn('No datasource_id available')
-    return
-  }
-  
   isLoadingTables.value = true
   try {
-    const tables = await getDbTables(currentDatasourceId.value)
-    let allTables = tables.map((t: any) => ({
-      name: t.name,
-      fields: t.columns?.map((col: any) => ({
-        name: col.name,
-        type: col.type
-      })) || []
-    }))
+    let allTables = []
     
-    // 【修复】如果有选中的表名列表，只显示这些表
-    if (selectedTableNames && selectedTableNames.length > 0) {
-      availableTables.value = allTables.filter(t => selectedTableNames.includes(t.name))
-      console.log('Filtered tables by schema_config:', availableTables.value)
+    // 【新增】优先使用 dataset_id 获取表信息（支持 DuckDB）
+    if (currentDatasetId.value) {
+      console.log('Loading tables from dataset:', currentDatasetId.value)
+      const tables = await getDatasetTables(currentDatasetId.value)
+      allTables = tables.map((t: any) => ({
+        name: t.name,
+        fields: t.columns?.map((col: any) => ({
+          name: col.name,
+          type: col.type
+        })) || []
+      }))
+      console.log('Loaded tables from dataset:', allTables)
+    } 
+    // 【原有逻辑】如果没有 dataset_id，使用 datasource_id
+    else if (currentDatasourceId.value) {
+      console.log('Loading tables from datasource:', currentDatasourceId.value)
+      const tables = await getDbTables(currentDatasourceId.value)
+      allTables = tables.map((t: any) => ({
+        name: t.name,
+        fields: t.columns?.map((col: any) => ({
+          name: col.name,
+          type: col.type
+        })) || []
+      }))
+      console.log('Loaded tables from datasource:', allTables)
+      
+      // 【修复】如果有选中的表名列表，只显示这些表
+      if (selectedTableNames && selectedTableNames.length > 0) {
+        allTables = allTables.filter(t => selectedTableNames.includes(t.name))
+        console.log('Filtered tables by schema_config:', allTables)
+      }
     } else {
-      availableTables.value = allTables
-      console.log('Loaded all tables:', availableTables.value)
+      console.warn('No dataset_id or datasource_id available')
+      return
     }
+    
+    availableTables.value = allTables
   } catch (error) {
     console.error('Failed to load tables:', error)
     ElMessage.error('加载表列表失败')
@@ -1036,12 +1092,6 @@ const handleAutoAnalyze = async () => {
     return
   }
   
-  // 检查是否有 datasource_id
-  if (!currentDatasourceId.value) {
-    ElMessage.error('未找到数据源 ID，无法进行 AI 分析')
-    return
-  }
-  
   isAnalyzing.value = true
   const loading = ElLoading.service({
     lock: true,
@@ -1056,11 +1106,13 @@ const handleAutoAnalyze = async () => {
     console.log('=== AI Analysis Debug ===')
     console.log('Table names to analyze:', tableNames)
     console.log('Datasource ID:', currentDatasourceId.value)
+    console.log('Current dataset ID:', currentDatasetId.value)
     console.log('Current nodes:', nodes.value)
     
-    // 调用 AI 分析接口
+    // 🔧 修复：对于 DuckDB 数据集（datasource_id 为 null），也能正常调用分析接口
+    // 后端会优先查找包含这些表的 DuckDB 数据集
     const result = await analyzeRelationships({
-      datasource_id: currentDatasourceId.value,
+      datasource_id: currentDatasourceId.value || undefined,
       table_names: tableNames
     })
     
@@ -1161,6 +1213,20 @@ const generateSQL = () => {
     generatedSQL.value = ''
     return
   }
+  
+  // #region agent log
+  console.log('=== generateSQL Debug ===')
+  console.log('Nodes:', nodes.value.map(n => ({ id: n.id, table: n.data.tableName })))
+  console.log('Edges:', edges.value.map(e => ({ 
+    id: e.id, 
+    source: e.source, 
+    target: e.target,
+    source_col: e.data?.source_col,
+    target_col: e.data?.target_col,
+    label: e.label
+  })))
+  fetch('http://127.0.0.1:7242/ingest/395ece91-8870-4a19-88ea-95fec7142662',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'modeling/index.vue:generateSQL',message:'SQL generation started',data:{edges_count:edges.value.length,edges_data:edges.value.map(e=>({source_col:e.data?.source_col,target_col:e.data?.target_col}))},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H6'})}).catch(()=>{});
+  // #endregion
 
   // 为每个表创建别名映射
   const tableAliases = new Map<string, string>()
@@ -1359,8 +1425,19 @@ const handleCreateView = async () => {
     console.log('View Name:', `v_${wideTableName.value}`)
     console.log('SQL:', sql)
     
+    // #region agent log
+    const requestPayload = {
+      datasource_id: currentDatasourceId.value,
+      dataset_id: currentDatasetId.value,
+      view_name: `v_${wideTableName.value}`,
+      sql: sql
+    }
+    fetch('http://127.0.0.1:7242/ingest/395ece91-8870-4a19-88ea-95fec7142662',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'modeling/index.vue:1415',message:'calling createView API',data:requestPayload,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1,H4'})}).catch(()=>{});
+    // #endregion
+    
     await createView({
       datasource_id: currentDatasourceId.value,
+      dataset_id: currentDatasetId.value,  // 添加dataset_id支持DuckDB
       view_name: `v_${wideTableName.value}`,
       sql: sql
     })
@@ -1594,6 +1671,78 @@ const handleSave = async (isAutoSave = false) => {
 // 返回
 const handleBack = () => {
   router.back()
+}
+
+// 确认并训练
+const handleConfirmAndTrain = async () => {
+  if (!currentDatasetId.value) {
+    ElMessage.error('未找到数据集 ID')
+    return
+  }
+  
+  if (nodes.value.length === 0) {
+    ElMessage.warning('请先添加表到画布')
+    return
+  }
+  
+  if (edges.value.length === 0) {
+    ElMessage.warning('请先添加表之间的关系连线')
+    return
+  }
+  
+  try {
+    await ElMessageBox.confirm(
+      '确认当前的表关系建模无误？点击确认将保存配置并开始训练数据集。',
+      '确认训练',
+      {
+        confirmButtonText: '确认并训练',
+        cancelButtonText: '取消',
+        type: 'info'
+      }
+    )
+    
+    // 先保存建模配置
+    await handleSave(false)
+    
+    // 触发训练
+    const loading = ElLoading.service({
+      lock: true,
+      text: '正在启动训练...',
+      background: 'rgba(0, 0, 0, 0.7)'
+    })
+    
+    try {
+      await trainDataset(currentDatasetId.value)
+      loading.close()
+      
+      ElMessage.success('训练已启动！')
+      
+      // 打开训练进度对话框
+      progressDialogVisible.value = true
+      
+      // 2秒后询问是否跳转
+      setTimeout(() => {
+        ElMessageBox.confirm(
+          '数据集正在训练中，训练完成后即可在智能问答中使用。是否现在前往智能问答页面？',
+          '提示',
+          {
+            confirmButtonText: '前往智能问答',
+            cancelButtonText: '留在此页面',
+            type: 'success'
+          }
+        ).then(() => {
+          router.push({ path: '/chat', query: { dataset: currentDatasetId.value?.toString() } })
+        }).catch(() => {
+          // 用户选择留在当前页面
+        })
+      }, 2000)
+    } catch (error: any) {
+      loading.close()
+      ElMessage.error(error.message || '训练启动失败')
+    }
+  } catch {
+    // 用户取消
+  }
 }
 
 // 自动保存防抖计时器

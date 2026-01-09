@@ -14,6 +14,7 @@ from app.models.metadata import Dataset
 from app.core.redis import redis_service, generate_cache_key
 from app.core.logger import get_logger
 from app.services.db_inspector import DBInspector
+from app.services.duckdb_service import DuckDBService
 from app.services.vanna.instance_manager import VannaInstanceManager
 from app.services.vanna.cache_service import VannaCacheService
 from app.services.vanna import utils
@@ -30,6 +31,37 @@ class VannaSqlGenerator:
 
     提供智能 SQL 生成、多轮对话反思循环、缓存管理等功能。
     """
+
+    @staticmethod
+    def _execute_sql(dataset: Dataset, sql: str) -> pd.DataFrame:
+        """
+        执行 SQL 查询，自动识别数据源类型（DuckDB 或传统数据库）
+        
+        Args:
+            dataset: Dataset 对象
+            sql: SQL 查询语句
+            
+        Returns:
+            pd.DataFrame: 查询结果
+        """
+        # 转义 SQL 中的 % 符号（仅对传统数据库）
+        escaped_sql = sql.replace('%', '%%')
+        
+        # 判断是 DuckDB 还是传统数据库
+        if dataset.duckdb_path:
+            # 使用 DuckDB 执行（不需要转义%）
+            logger.debug(f"Executing SQL on DuckDB: {dataset.duckdb_path}")
+            df = DuckDBService.execute_query(dataset.duckdb_path, sql, read_only=True)
+        else:
+            # 使用传统数据库执行
+            if not dataset.datasource:
+                raise ValueError("Dataset has no datasource")
+            
+            logger.debug(f"Executing SQL on traditional datasource: {dataset.datasource.type}")
+            engine = DBInspector.get_engine(dataset.datasource)
+            df = pd.read_sql(escaped_sql, engine)
+        
+        return df
 
     @staticmethod
     def _detect_compound_query(question: str) -> bool:
@@ -277,10 +309,7 @@ UNION ALL
                         else:
                             # 重新执行 SQL 查询
                             sql_exec_start = time.perf_counter()
-                            engine = DBInspector.get_engine(dataset.datasource)
-                            # 转义SQL中的%符号
-                            escaped_cached_sql = cached_sql.replace('%', '%%')
-                            df = pd.read_sql(escaped_cached_sql, engine)
+                            df = cls._execute_sql(dataset, cached_sql)
                             sql_exec_time = (time.perf_counter() - sql_exec_start) * 1000
 
                             logger.info(
@@ -509,7 +538,7 @@ UNION ALL
                         intermediate_exec_start = time.perf_counter()
                         # 转义SQL中的%符号
                         escaped_intermediate_sql = intermediate_sql.replace('%', '%%')
-                        df_intermediate = pd.read_sql(escaped_intermediate_sql, engine)
+                        df_intermediate = cls._execute_sql(dataset, intermediate_sql)
                         intermediate_exec_time = (time.perf_counter() - intermediate_exec_start) * 1000
 
                         logger.info(
@@ -632,7 +661,7 @@ UNION ALL
                     # 转义SQL中的%符号，防止pymysql将其视为参数占位符
                     # 例如：DATE_FORMAT(..., '%Y-%m') 需要转义为 DATE_FORMAT(..., '%%Y-%%m')
                     escaped_sql = cleaned_sql.replace('%', '%%')
-                    df = pd.read_sql(escaped_sql, engine)
+                    df = cls._execute_sql(dataset, escaped_sql)
                     final_exec_time = (time.perf_counter() - final_exec_start) * 1000
 
                     logger.info(
@@ -790,7 +819,65 @@ UNION ALL
 
                     # 检查是否是连接超时错误
                     is_timeout_error = '2013' in error_msg or 'Lost connection' in error_msg or 'timeout' in error_msg.lower()
+                    
+                    # 检查是否是列不存在错误
+                    is_column_error = '1054' in error_msg or 'Unknown column' in error_msg or "doesn't exist" in error_msg
 
+                    # 处理列不存在错误 - 提供真实表结构信息给LLM
+                    if is_column_error and round_num < max_rounds:
+                        try:
+                            execution_steps.append("检测到列不存在错误，尝试获取真实表结构")
+                            
+                            # 提取SQL中涉及的表名
+                            table_names = set()
+                            # 匹配 FROM 和 JOIN 后面的表名
+                            from_match = re.findall(r'\bFROM\s+`?(\w+)`?', cleaned_sql, re.IGNORECASE)
+                            join_match = re.findall(r'\bJOIN\s+`?(\w+)`?', cleaned_sql, re.IGNORECASE)
+                            table_names.update(from_match)
+                            table_names.update(join_match)
+                            
+                            if table_names:
+                                # 获取所有涉及表的真实列信息
+                                table_schemas = {}
+                                for table in table_names:
+                                    try:
+                                        columns = DBInspector.get_column_names(dataset.datasource, table)
+                                        table_schemas[table] = columns
+                                        execution_steps.append(f"获取表 {table} 的列: {', '.join(columns[:10])}{'...' if len(columns) > 10 else ''}")
+                                    except Exception as col_err:
+                                        logger.warning(f"Failed to get columns for table {table}: {col_err}")
+                                        
+                                if table_schemas:
+                                    # 构建详细的表结构信息
+                                    schema_info = "\n\n".join([
+                                        f"表 {table} 的实际字段:\n{', '.join(cols)}"
+                                        for table, cols in table_schemas.items()
+                                    ])
+                                    
+                                    correction_prompt = f"""以下 SQL 在 {dataset.datasource.type.upper()} 数据库上执行失败:
+
+SQL:
+{cleaned_sql}
+
+错误:
+{error_msg}
+
+{schema_info}
+
+【重要】请根据表的实际字段修正这个 SQL。
+- 只能使用上面列出的字段，不要使用不存在的字段
+- 如果用户问的字段不存在，请基于现有字段生成最接近的查询
+- 用户的原始问题是：{question}
+
+只输出修正后的 SQL，不要解释。"""
+                                    
+                                    current_response = vn.submit_prompt(correction_prompt)
+                                    execution_steps.append("LLM 已基于真实表结构生成修正方案")
+                                    continue
+                        except Exception as schema_err:
+                            logger.error(f"Failed to get table schema for correction: {schema_err}")
+                            execution_steps.append(f"获取表结构失败: {str(schema_err)[:50]}")
+                    
                     if is_timeout_error:
                         error_prompt = f"""查询执行超时了。用户的问题是: {question}
 

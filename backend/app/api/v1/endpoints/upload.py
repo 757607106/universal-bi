@@ -1,16 +1,18 @@
 """
 文件上传API端点 - 处理Excel/CSV文件上传和自动分析
 """
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks, Form
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Dict
 import uuid
+import re
 
-from app.db.session import get_db
+from app.db.session import get_db, SessionLocal
 from app.api.deps import get_current_user
 from app.models.metadata import User, Dataset, DataSource
-from app.schemas.upload import FileUploadResponse, UploadedDatasetInfo
+from app.schemas.upload import FileUploadResponse, UploadedDatasetInfo, MultiFileUploadResponse
 from app.services.file_etl import FileETLService
+from app.services.duckdb_service import DuckDBService
 from app.services.vanna import VannaTrainingService
 from app.core.logger import get_logger
 
@@ -261,4 +263,188 @@ def _train_uploaded_dataset(dataset_id: int, table_names: List[str]):
         )
     finally:
         db.close()
+
+
+def _sanitize_table_name(filename: str) -> str:
+    """
+    清理文件名以生成合法的表名
+    
+    Args:
+        filename: 原始文件名
+        
+    Returns:
+        str: 清理后的表名
+    """
+    # 移除扩展名
+    name = filename.rsplit('.', 1)[0]
+    
+    # 替换特殊字符为下划线
+    name = re.sub(r'[^\w\u4e00-\u9fa5]', '_', name)
+    
+    # 移除多余的下划线
+    name = re.sub(r'_+', '_', name)
+    
+    # 移除首尾下划线
+    name = name.strip('_')
+    
+    # 如果以数字开头，添加前缀
+    if name and name[0].isdigit():
+        name = 'tbl_' + name
+    
+    # 限制长度
+    if len(name) > 50:
+        name = name[:50]
+    
+    return name.lower()
+
+
+@router.post("/multi-files", response_model=MultiFileUploadResponse)
+async def upload_multiple_files(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    dataset_name: str = Form(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    批量上传多个 Excel/CSV 文件并创建 Dataset
+    
+    工作流程：
+    1. 验证所有文件（格式、大小）
+    2. 解析为 DataFrame
+    3. 创建 DuckDB 数据库
+    4. 导入所有表
+    5. 创建 Dataset 记录
+    6. 后台触发 AI 关系推理和训练
+    
+    Args:
+        files: 上传的文件列表
+        dataset_name: 数据集名称
+        db: 数据库会话
+        current_user: 当前用户
+        
+    Returns:
+        MultiFileUploadResponse: 上传结果
+    """
+    logger.info(
+        "Multi-file upload request received",
+        user_id=current_user.id,
+        dataset_name=dataset_name,
+        file_count=len(files)
+    )
+    
+    if len(files) == 0:
+        raise HTTPException(status_code=400, detail="请至少上传一个文件")
+    
+    if len(files) > 10:
+        raise HTTPException(status_code=400, detail="单次最多上传 10 个文件")
+    
+    try:
+        # 1. 验证和解析所有文件
+        dataframes: Dict[str, 'pd.DataFrame'] = {}
+        file_info = []
+        
+        for file in files:
+            content = await file.read()
+            file_size = len(content)
+            
+            # 验证文件
+            FileETLService.validate_file(file.filename, file_size)
+            
+            # 解析文件
+            df = FileETLService.parse_file(content, file.filename)
+            
+            # 生成表名
+            table_name = _sanitize_table_name(file.filename)
+            
+            # 如果表名重复，添加后缀
+            if table_name in dataframes:
+                counter = 1
+                while f"{table_name}_{counter}" in dataframes:
+                    counter += 1
+                table_name = f"{table_name}_{counter}"
+            
+            dataframes[table_name] = df
+            file_info.append({
+                "filename": file.filename,
+                "table_name": table_name,
+                "rows": len(df),
+                "columns": len(df.columns)
+            })
+            
+            logger.info(
+                f"Parsed file: {file.filename} -> {table_name}",
+                rows=len(df),
+                columns=len(df.columns)
+            )
+        
+        # 2. 创建 Dataset 记录
+        dataset = Dataset(
+            name=dataset_name,
+            datasource_id=None,  # DuckDB 数据集不需要传统数据源
+            status="pending",
+            owner_id=current_user.id,
+            schema_config=list(dataframes.keys())
+        )
+        db.add(dataset)
+        db.commit()
+        db.refresh(dataset)
+        
+        # 生成 collection_name（必须在获取dataset.id之后）
+        dataset.collection_name = f"vec_ds_{dataset.id}"
+        
+        # 3. 创建 DuckDB 数据库并导入数据
+        db_path = DuckDBService.create_dataset_database(dataset.id)
+        stats = DuckDBService.import_dataframes(db_path, dataframes)
+        
+        # 4. 更新 Dataset 元数据（包括 collection_name 和 duckdb_path）
+        dataset.duckdb_path = db_path
+        db.commit()  # 这里会同时保存 collection_name 和 duckdb_path
+        db.refresh(dataset)
+        
+        logger.info(
+            "Dataset created successfully",
+            dataset_id=dataset.id,
+            duckdb_path=db_path,
+            tables=list(stats.keys())
+        )
+        
+        # 5. 后台任务：训练 DDL（暂不做关系推理，在用户确认建模后再做）
+        background_tasks.add_task(
+            _train_uploaded_dataset,
+            dataset_id=dataset.id,
+            table_names=list(dataframes.keys())
+        )
+        
+        # 计算总行数
+        total_rows = sum(stats.values())
+        
+        return MultiFileUploadResponse(
+            success=True,
+            message=f"成功上传 {len(files)} 个文件，共 {total_rows} 行数据",
+            dataset_id=dataset.id,
+            dataset_name=dataset.name,
+            tables=stats,
+            total_files=len(files),
+            total_rows=total_rows,
+            duckdb_path=db_path
+        )
+        
+    except ValueError as e:
+        logger.error(
+            "Multi-file upload validation failed",
+            user_id=current_user.id,
+            error=str(e)
+        )
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(
+            "Multi-file upload failed",
+            user_id=current_user.id,
+            dataset_name=dataset_name,
+            error=str(e),
+            error_type=type(e).__name__,
+            exc_info=True
+        )
+        raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)}")
 

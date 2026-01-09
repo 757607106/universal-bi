@@ -1,7 +1,7 @@
 # 技术栈详细说明书
 
-> **文档版本**: v1.2  
-> **最后更新**: 2026-01-08
+> **文档版本**: v1.3  
+> **最后更新**: 2026-01-09
 
 ## 1. 前端架构
 
@@ -35,8 +35,10 @@
 |------|------|------|
 | **Text-to-SQL** | Vanna 2.0 | 工厂模式，支持多租户 |
 | **LLM** | 通义千问 (Qwen) | DashScope API (qwen-max/qwen-turbo) |
-| **向量数据库** | ChromaDB | 本地持久化，Collection 隔离 |
+| **向量数据库** | ChromaDB / PGVector | 支持双后端，Collection 隔离 |
 | **上下文增强** | 自定义 Enhancer | 多语言支持、Schema 注入 |
+| **智能错误恢复** | 动态表结构注入 | 实时获取真实列信息修正SQL |
+| **训练数据优化** | 智能示例生成 | 基于DDL自动生成针对性查询 |
 
 ### 2.2 服务模块化架构
 
@@ -45,8 +47,8 @@ backend/app/services/
 ├── vanna/                      # Vanna AI 模块化服务
 │   ├── base.py                 # VannaLegacy 基础类
 │   ├── instance_manager.py     # 实例生命周期管理
-│   ├── training_service.py     # 训练服务
-│   ├── sql_generator.py        # SQL 生成与执行
+│   ├── training_service.py     # 训练服务（智能示例生成✨）
+│   ├── sql_generator.py        # SQL 生成与执行（智能错误恢复✨）
 │   ├── cache_service.py        # Redis 缓存服务
 │   ├── analyst_service.py      # 业务分析服务
 │   ├── training_data_service.py# 训练数据 CRUD
@@ -55,7 +57,12 @@ backend/app/services/
 ├── vanna_tools.py              # Agent 工具定义
 ├── vanna_enhancer.py           # LLM 上下文增强器
 ├── vanna_manager.py            # 向后兼容入口
-└── db_inspector.py             # 数据库元数据检查
+├── db_inspector.py             # 数据库元数据检查（动态列获取✨）
+├── chart_recommender.py        # 智能图表推荐
+├── query_rewriter.py           # 查询重写器
+├── data_insight.py             # 数据洞察分析
+├── fluctuation_analyzer.py     # 波动归因分析
+└── input_suggester.py          # 输入联想服务
 ```
 
 ## 3. 基础设施

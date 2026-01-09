@@ -21,6 +21,7 @@ class DatasetResponse(DatasetBase):
     process_rate: int = 0  # 训练进度百分比 0-100
     error_msg: Optional[str] = None
     last_train_at: Optional[datetime] = None
+    duckdb_path: Optional[str] = None  # DuckDB 数据库文件路径
 
     class Config:
         from_attributes = True
@@ -45,7 +46,7 @@ class BusinessTermResponse(BusinessTermBase):
 
 # Modeling Schemas
 class AnalyzeRelationshipsRequest(BaseModel):
-    datasource_id: int
+    datasource_id: Optional[int] = None  # 🔧 可选，DuckDB 数据集不需要 datasource_id
     table_names: List[str]
 
 class EdgeResponse(BaseModel):
@@ -70,7 +71,8 @@ class AnalyzeRelationshipsResponse(BaseModel):
     nodes: List[NodeResponse]
 
 class CreateViewRequest(BaseModel):
-    datasource_id: int
+    datasource_id: Optional[int] = None  # DuckDB数据集可能没有datasource_id
+    dataset_id: Optional[int] = None  # 用于DuckDB数据集
     view_name: str
     sql: str
 

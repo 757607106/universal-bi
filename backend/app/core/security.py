@@ -69,10 +69,13 @@ def get_redis_client():
 
     return _redis_client if _redis_available else None
 
-def get_cipher_suite():
+def get_cipher_suite(secret_key: str = None):
     """
     获取 Fernet 加密套件
     使用 PBKDF2 从 SECRET_KEY 派生 32 字节密钥，比简单 padding 更安全
+    
+    Args:
+        secret_key: 可选的密钥，不提供则使用 settings.SECRET_KEY
     """
     # 使用 PBKDF2 密钥派生函数
     kdf = PBKDF2HMAC(
@@ -81,7 +84,8 @@ def get_cipher_suite():
         salt=_ENCRYPTION_SALT,
         iterations=100_000,  # OWASP 推荐的迭代次数
     )
-    key = kdf.derive(settings.SECRET_KEY.encode())
+    key_to_use = secret_key if secret_key else settings.SECRET_KEY
+    key = kdf.derive(key_to_use.encode())
     fernet_key = base64.urlsafe_b64encode(key)
     return Fernet(fernet_key)
 
@@ -90,8 +94,44 @@ def encrypt_password(password: str) -> str:
     return cipher_suite.encrypt(password.encode()).decode()
 
 def decrypt_password(encrypted_password: str) -> str:
-    cipher_suite = get_cipher_suite()
-    return cipher_suite.decrypt(encrypted_password.encode()).decode()
+    """
+    解密密码，支持密钥轮换
+    
+    先尝试使用当前 SECRET_KEY 解密，
+    如果失败则依次尝试 OLD_SECRET_KEYS 列表中的旧密钥
+    
+    Args:
+        encrypted_password: 加密后的密码
+        
+    Returns:
+        str: 解密后的明文密码
+        
+    Raises:
+        Exception: 所有密钥都无法解密时抛出异常
+    """
+    # 1. 尝试使用当前密钥解密
+    try:
+        cipher_suite = get_cipher_suite()
+        return cipher_suite.decrypt(encrypted_password.encode()).decode()
+    except Exception as e:
+        logger.debug(f"Current key failed to decrypt: {e}")
+    
+    # 2. 尝试使用旧密钥列表解密
+    for old_key in settings.old_secret_keys_list:
+        try:
+            cipher_suite = get_cipher_suite(old_key)
+            decrypted = cipher_suite.decrypt(encrypted_password.encode()).decode()
+            logger.warning(f"Decrypted using an old key. Consider re-encrypting with current key.")
+            return decrypted
+        except Exception:
+            continue
+    
+    # 3. 所有密钥都失败
+    raise Exception(
+        "无法解密密码：当前密钥和所有旧密钥都失败。"
+        "可能的原因：1) 密钥已更改且未配置 OLD_SECRET_KEYS；"
+        "2) 数据已损坏。请使用「重新连接」功能重新设置密码。"
+    )
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)

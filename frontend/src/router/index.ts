@@ -30,6 +30,14 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/Dataset/index.vue')
       },
       {
+        path: 'datasets/multi-upload',
+        name: 'dataset-multi-upload',
+        component: () => import('@/views/Dataset/MultiFileUpload.vue'),
+        meta: {
+          title: '批量上传数据文件'
+        }
+      },
+      {
         path: 'data-tables',
         name: 'data-tables',
         component: () => import('@/views/DataTable/index.vue'),

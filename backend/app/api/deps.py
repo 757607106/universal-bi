@@ -27,6 +27,10 @@ def get_current_user(
     3. 用户是否被软删除 (is_deleted)
     4. 用户是否被封禁 (is_active)
     """
+    # #region agent log
+    import json; open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').write(json.dumps({"location": "deps.py:get_current_user:entry", "message": "get_current_user called", "data": {"token_prefix": token[:20] if token else None}, "timestamp": __import__('time').time() * 1000, "sessionId": "debug-session", "hypothesisId": "H2"}) + '\n'); open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').close()
+    # #endregion
+    
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -34,7 +38,13 @@ def get_current_user(
     )
     
     # === 安全检查 1: Token 黑名单 ===
-    if is_token_blacklisted(token):
+    blacklisted = is_token_blacklisted(token)
+    
+    # #region agent log
+    import json; open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').write(json.dumps({"location": "deps.py:get_current_user:blacklist_check", "message": "token blacklist check", "data": {"is_blacklisted": blacklisted}, "timestamp": __import__('time').time() * 1000, "sessionId": "debug-session", "hypothesisId": "H2"}) + '\n'); open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').close()
+    # #endregion
+    
+    if blacklisted:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has been revoked",
@@ -47,10 +57,18 @@ def get_current_user(
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
         username: str = payload.get("sub")
+        
+        # #region agent log
+        import json; open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').write(json.dumps({"location": "deps.py:get_current_user:jwt_decode_success", "message": "jwt decoded successfully", "data": {"username": username}, "timestamp": __import__('time').time() * 1000, "sessionId": "debug-session", "hypothesisId": "H2"}) + '\n'); open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').close()
+        # #endregion
+        
         if username is None:
             raise credentials_exception
         token_data = TokenData(username=username)
-    except JWTError:
+    except JWTError as e:
+        # #region agent log
+        import json; open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').write(json.dumps({"location": "deps.py:get_current_user:jwt_decode_failed", "message": "jwt decode failed", "data": {"error": str(e)}, "timestamp": __import__('time').time() * 1000, "sessionId": "debug-session", "hypothesisId": "H2"}) + '\n'); open('/Users/pusonglin/PycharmProjects/universal-bi/.cursor/debug.log', 'a').close()
+        # #endregion
         raise credentials_exception
     
     # === 安全检查 3 & 4: 用户状态检查 ===
