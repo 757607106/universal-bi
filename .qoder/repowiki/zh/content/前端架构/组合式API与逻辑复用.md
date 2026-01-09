@@ -263,31 +263,31 @@ useTheme --> Charts
 
 ```mermaid
 graph TB
-subgraph "Vue 3 核心"
-VueCore[Vue 3 Core]
-ReactiveAPI[响应式API]
-LifecycleHooks[生命周期钩子]
-end
-subgraph "项目依赖"
-CompositionAPI[组合式API]
-RefAPI[ref API]
-ComputedAPI[computed API]
-WatchAPI[watch API]
-EffectAPI[effect API]
-end
-subgraph "第三方库"
-VueUse[@vueuse/core]
-ElementPlus[Element Plus]
-Pinia[Pinia状态管理]
-end
-VueCore --> CompositionAPI
-CompositionAPI --> RefAPI
-CompositionAPI --> ComputedAPI
-CompositionAPI --> WatchAPI
-CompositionAPI --> EffectAPI
-VueUse --> CompositionAPI
-ElementPlus --> VueCore
-Pinia --> VueCore
+    subgraph "Vue 3 核心"
+        VueCore["Vue 3 Core"]
+        ReactiveAPI["响应式API"]
+        LifecycleHooks["生命周期钩子"]
+    end
+    subgraph "项目依赖"
+        CompositionAPI["组合式API"]
+        RefAPI["ref API"]
+        ComputedAPI["computed API"]
+        WatchAPI["watch API"]
+        EffectAPI["effect API"]
+    end
+    subgraph "第三方库"
+        VueUse["@vueuse/core"]
+        ElementPlus["Element Plus"]
+        Pinia["Pinia状态管理"]
+    end
+    VueCore --> CompositionAPI
+    CompositionAPI --> RefAPI
+    CompositionAPI --> ComputedAPI
+    CompositionAPI --> WatchAPI
+    CompositionAPI --> EffectAPI
+    VueUse --> CompositionAPI
+    ElementPlus --> VueCore
+    Pinia --> VueCore
 ```
 
 **图表来源**

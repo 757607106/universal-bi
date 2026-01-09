@@ -1,0 +1,84 @@
+{
+  "title": "复合查询训练数据示例",
+  "description": "包含同时查询最高/最低、前N/后N等复合查询的SQL示例，用于增强AI对复杂查询的理解",
+  "version": "1.0",
+  "created_at": "2026-01-09",
+  "examples": [
+    {
+      "type": "sql",
+      "question": "全年销售额最高的月份和最低的月份分别是什么时候",
+      "sql": "(SELECT DATE_FORMAT(order_date, '%Y-%m') as month, SUM(amount) as total_sales, '最高' as type FROM orders WHERE YEAR(order_date) = YEAR(CURDATE()) GROUP BY DATE_FORMAT(order_date, '%Y-%m') ORDER BY total_sales DESC LIMIT 1) UNION ALL (SELECT DATE_FORMAT(order_date, '%Y-%m') as month, SUM(amount) as total_sales, '最低' as type FROM orders WHERE YEAR(order_date) = YEAR(CURDATE()) GROUP BY DATE_FORMAT(order_date, '%Y-%m') ORDER BY total_sales ASC LIMIT 1)",
+      "description": "使用UNION ALL组合两个查询，分别获取销售额最高和最低的月份"
+    },
+    {
+      "type": "sql",
+      "question": "订单金额最大和最小的客户分别是谁",
+      "sql": "(SELECT customer_name, SUM(amount) as total_amount, '金额最大' as type FROM orders GROUP BY customer_name ORDER BY total_amount DESC LIMIT 1) UNION ALL (SELECT customer_name, SUM(amount) as total_amount, '金额最小' as type FROM orders GROUP BY customer_name ORDER BY total_amount ASC LIMIT 1)",
+      "description": "同时返回订单总金额最大和最小的客户"
+    },
+    {
+      "type": "sql",
+      "question": "销售额前3名和后3名的产品",
+      "sql": "(SELECT product_name, SUM(quantity * price) as total_sales, 'TOP3' as ranking_type FROM order_items GROUP BY product_name ORDER BY total_sales DESC LIMIT 3) UNION ALL (SELECT product_name, SUM(quantity * price) as total_sales, 'BOTTOM3' as ranking_type FROM order_items GROUP BY product_name ORDER BY total_sales ASC LIMIT 3)",
+      "description": "使用UNION ALL返回销售额最高和最低的各3个产品"
+    },
+    {
+      "type": "sql",
+      "question": "今年表现最好和最差的销售员分别是谁",
+      "sql": "(SELECT salesperson_name, SUM(sales_amount) as total_sales, '最佳销售员' as ranking FROM sales WHERE YEAR(sale_date) = YEAR(CURDATE()) GROUP BY salesperson_name ORDER BY total_sales DESC LIMIT 1) UNION ALL (SELECT salesperson_name, SUM(sales_amount) as total_sales, '待提升销售员' as ranking FROM sales WHERE YEAR(sale_date) = YEAR(CURDATE()) GROUP BY salesperson_name ORDER BY total_sales ASC LIMIT 1)",
+      "description": "返回销售业绩最好和最差的销售员"
+    },
+    {
+      "type": "sql",
+      "question": "最畅销和最滞销的产品类别是什么",
+      "sql": "(SELECT category, SUM(quantity) as total_quantity, '最畅销' as status FROM products p JOIN order_items oi ON p.id = oi.product_id GROUP BY category ORDER BY total_quantity DESC LIMIT 1) UNION ALL (SELECT category, SUM(quantity) as total_quantity, '最滞销' as status FROM products p JOIN order_items oi ON p.id = oi.product_id GROUP BY category ORDER BY total_quantity ASC LIMIT 1)",
+      "description": "返回销量最高和最低的产品类别"
+    },
+    {
+      "type": "sql",
+      "question": "每月销售额最高和最低的日期",
+      "sql": "(SELECT DATE(order_date) as sale_date, SUM(amount) as daily_sales, '最高日' as type FROM orders WHERE MONTH(order_date) = MONTH(CURDATE()) GROUP BY DATE(order_date) ORDER BY daily_sales DESC LIMIT 1) UNION ALL (SELECT DATE(order_date) as sale_date, SUM(amount) as daily_sales, '最低日' as type FROM orders WHERE MONTH(order_date) = MONTH(CURDATE()) GROUP BY DATE(order_date) ORDER BY daily_sales ASC LIMIT 1)",
+      "description": "返回本月销售额最高和最低的日期"
+    },
+    {
+      "type": "sql",
+      "question": "库存最多和最少的产品",
+      "sql": "(SELECT product_name, stock_quantity, '库存最多' as stock_status FROM products ORDER BY stock_quantity DESC LIMIT 1) UNION ALL (SELECT product_name, stock_quantity, '库存最少' as stock_status FROM products ORDER BY stock_quantity ASC LIMIT 1)",
+      "description": "返回库存量最高和最低的产品"
+    },
+    {
+      "type": "sql",
+      "question": "订单数量前5名和后5名的客户",
+      "sql": "(SELECT customer_name, COUNT(*) as order_count, 'TOP5' as ranking FROM orders GROUP BY customer_name ORDER BY order_count DESC LIMIT 5) UNION ALL (SELECT customer_name, COUNT(*) as order_count, 'BOTTOM5' as ranking FROM orders GROUP BY customer_name ORDER BY order_count ASC LIMIT 5)",
+      "description": "返回订单数量最多和最少的各5个客户"
+    },
+    {
+      "type": "sql",
+      "question": "平均客单价最高和最低的地区",
+      "sql": "(SELECT region, AVG(amount) as avg_order_amount, '客单价最高' as rank_type FROM orders GROUP BY region ORDER BY avg_order_amount DESC LIMIT 1) UNION ALL (SELECT region, AVG(amount) as avg_order_amount, '客单价最低' as rank_type FROM orders GROUP BY region ORDER BY avg_order_amount ASC LIMIT 1)",
+      "description": "返回平均订单金额最高和最低的地区"
+    },
+    {
+      "type": "sql",
+      "question": "今年第一季度和第四季度的销售额分别是多少",
+      "sql": "(SELECT 'Q1' as quarter, SUM(amount) as total_sales FROM orders WHERE YEAR(order_date) = YEAR(CURDATE()) AND QUARTER(order_date) = 1) UNION ALL (SELECT 'Q4' as quarter, SUM(amount) as total_sales FROM orders WHERE YEAR(order_date) = YEAR(CURDATE()) AND QUARTER(order_date) = 4)",
+      "description": "使用UNION ALL返回两个季度的销售数据"
+    }
+  ],
+  "usage_guide": {
+    "description": "如何使用这些训练数据",
+    "steps": [
+      "1. 通过数据集管理界面导入这些问答对",
+      "2. 根据实际表名和字段名调整SQL语句",
+      "3. 导入后需要重新训练数据集",
+      "4. 训练完成后测试复合查询效果"
+    ],
+    "api_example": {
+      "endpoint": "POST /api/v1/dataset/{dataset_id}/train",
+      "body": {
+        "question": "全年销售额最高的月份和最低的月份分别是什么时候",
+        "sql": "(SELECT ... UNION ALL SELECT ...)"
+      }
+    }
+  }
+}

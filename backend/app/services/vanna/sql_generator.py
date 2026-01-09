@@ -31,6 +31,117 @@ class VannaSqlGenerator:
     提供智能 SQL 生成、多轮对话反思循环、缓存管理等功能。
     """
 
+    @staticmethod
+    def _detect_compound_query(question: str) -> bool:
+        """
+        检测是否是复合查询（需要返回多个结果）
+
+        例如：
+        - "全年销售额最高的月份和最低的月份分别是什么时候"
+        - "订单金额最大和最小的客户分别是谁"
+        - "销售额前3名和后3名的产品"
+
+        Args:
+            question: 用户问题
+
+        Returns:
+            bool: 是否是复合查询
+        """
+        compound_patterns = [
+            # 最高/最大 和 最低/最小 组合
+            r'(最高|最大|最多).{0,20}(和|与|以及|跟).{0,20}(最低|最小|最少)',
+            r'(最低|最小|最少).{0,20}(和|与|以及|跟).{0,20}(最高|最大|最多)',
+            # 第一/最好 和 最后/最差 组合
+            r'(第一|最好|最优).{0,20}(和|与|以及).{0,20}(最后|最差|最劣)',
+            r'(最后|最差|最劣).{0,20}(和|与|以及).{0,20}(第一|最好|最优)',
+            # 前N名 和 后N名 组合
+            r'(前\d+|TOP\s*\d+).{0,20}(和|与|以及).{0,20}(后\d+|BOTTOM\s*\d+)',
+            r'(后\d+|BOTTOM\s*\d+).{0,20}(和|与|以及).{0,20}(前\d+|TOP\s*\d+)',
+            # 分别/同时 + 多个极值
+            r'分别.{0,30}(最|第一|前\d+|后\d+)',
+            r'同时.{0,30}(最|第一|前\d+|后\d+)',
+        ]
+
+        for pattern in compound_patterns:
+            if re.search(pattern, question, re.IGNORECASE):
+                return True
+        return False
+
+    @staticmethod
+    def _get_compound_query_hint(question: str) -> str:
+        """
+        为复合查询生成提示语，指导 LLM 生成正确的 SQL
+
+        Args:
+            question: 用户问题
+
+        Returns:
+            str: 复合查询提示语
+        """
+        # 检测具体类型并生成针对性提示
+        if re.search(r'(最高|最大).{0,20}(和|与).{0,20}(最低|最小)', question, re.IGNORECASE) or \
+           re.search(r'(最低|最小).{0,20}(和|与).{0,20}(最高|最大)', question, re.IGNORECASE):
+            return """
+【复合查询提示】这是一个需要同时返回"最高"和"最低"两个结果的查询。
+请使用 UNION ALL 组合两个查询：
+1. 第一个子查询：使用 ORDER BY ... DESC LIMIT 1 获取最高/最大值
+2. 第二个子查询：使用 ORDER BY ... ASC LIMIT 1 获取最低/最小值
+3. 添加一个 type 列来区分结果类型（如 '最高' 或 '最低'）
+
+示例结构：
+(SELECT ..., '最高' as type FROM ... ORDER BY value DESC LIMIT 1)
+UNION ALL
+(SELECT ..., '最低' as type FROM ... ORDER BY value ASC LIMIT 1)
+"""
+
+        # 检测前N名和后N名
+        match = re.search(r'前(\d+).{0,20}(和|与).{0,20}后(\d+)', question, re.IGNORECASE)
+        if match:
+            top_n = match.group(1)
+            bottom_n = match.group(3)
+            return f"""
+【复合查询提示】这是一个需要同时返回"前{top_n}名"和"后{bottom_n}名"的查询。
+请使用 UNION ALL 组合两个查询：
+1. 第一个子查询：使用 ORDER BY ... DESC LIMIT {top_n} 获取前{top_n}名
+2. 第二个子查询：使用 ORDER BY ... ASC LIMIT {bottom_n} 获取后{bottom_n}名
+3. 添加一个 type 列来区分结果类型（如 'TOP{top_n}' 或 'BOTTOM{bottom_n}'）
+"""
+
+        # 通用复合查询提示
+        return """
+【复合查询提示】这是一个复合查询，需要返回多个不同条件的结果。
+请确保使用 UNION ALL 或子查询来完整回答用户的所有需求，不要只返回部分结果。
+"""
+
+    @staticmethod
+    def _validate_result_completeness(question: str, df: pd.DataFrame) -> tuple:
+        """
+        验证结果是否完整回答了问题
+
+        Args:
+            question: 用户问题
+            df: 查询结果 DataFrame
+
+        Returns:
+            tuple: (is_complete, suggestion) 是否完整以及不完整时的建议
+        """
+        # 检测"最高和最低"类型查询
+        if re.search(r'(最高|最大).{0,20}(和|与).{0,20}(最低|最小)', question, re.IGNORECASE) or \
+           re.search(r'(最低|最小).{0,20}(和|与).{0,20}(最高|最大)', question, re.IGNORECASE):
+            if len(df) < 2:
+                return False, "查询结果可能不完整。您的问题同时询问了最高和最低值，但只返回了一条记录。您可以追问：'请同时给出最高和最低的结果'"
+
+        # 检测"前N名和后N名"类型查询
+        match = re.search(r'前(\d+).{0,20}(和|与).{0,20}后(\d+)', question, re.IGNORECASE)
+        if match:
+            top_n = int(match.group(1))
+            bottom_n = int(match.group(3))
+            expected = top_n + bottom_n
+            if len(df) < expected:
+                return False, f"查询结果可能不完整。您期望获取前{top_n}名和后{bottom_n}名共{expected}条记录，但只返回了{len(df)}条。"
+
+        return True, ""
+
     @classmethod
     async def generate_result(
         cls, 
@@ -110,7 +221,20 @@ class VannaSqlGenerator:
                     )
             except Exception as e:
                 logger.warning(f"Failed to load data table info: {e}")
-        
+
+        # === 复合查询检测与提示增强 ===
+        is_compound_query = cls._detect_compound_query(question)
+        compound_hint = ""
+        if is_compound_query:
+            compound_hint = cls._get_compound_query_hint(question)
+            enhanced_question = enhanced_question + compound_hint
+            execution_steps.append("检测到复合查询，已增强 Prompt 提示")
+            logger.info(
+                "Compound query detected",
+                dataset_id=dataset_id,
+                question=question[:100]
+            )
+
         # 记录请求开始
         logger.info(
             "SQL generation started",
@@ -603,6 +727,20 @@ class VannaSqlGenerator:
                             logger.warning(f"Failed to generate followup questions: {fq_error}")
                             execution_steps.append("后续问题生成失败")
 
+                    # === 结果完整性验证 ===
+                    result_warning = None
+                    if is_compound_query:
+                        is_complete, suggestion = cls._validate_result_completeness(question, df)
+                        if not is_complete:
+                            result_warning = suggestion
+                            execution_steps.append(f"⚠️ {suggestion}")
+                            logger.warning(
+                                "Incomplete result for compound query",
+                                dataset_id=dataset_id,
+                                question=question[:100],
+                                row_count=len(df)
+                            )
+
                     result = {
                         "sql": cleaned_sql,
                         "columns": df.columns.tolist(),
@@ -615,7 +753,8 @@ class VannaSqlGenerator:
                         "insight": insight,
                         "data_interpretation": data_interpretation,
                         "fluctuation_analysis": fluctuation_analysis,
-                        "followup_questions": followup_questions
+                        "followup_questions": followup_questions,
+                        "result_warning": result_warning  # 新增：结果不完整时的警告信息
                     }
 
                     # === Step D: Write to Cache ===
