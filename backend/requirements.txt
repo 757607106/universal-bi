@@ -7,7 +7,6 @@ pydantic-settings==2.1.0
 
 # ========== 数据库驱动 ==========
 psycopg2-binary==2.9.9
-pymysql==1.1.2
 
 # ========== 安全相关 ==========
 cryptography==46.0.3
@@ -18,7 +17,6 @@ bcrypt==4.0.1
 # ========== AI/ML 相关 ==========
 vanna==2.0.1
 openai==2.14.0
-chromadb==0.5.0
 sentence-transformers==5.0.0
 
 # ========== 工具库 ==========
@@ -40,7 +38,7 @@ asgi-correlation-id==4.3.4
 # ========== 异步支持 ==========
 nest-asyncio==1.6.0
 
-# ========== PGVector 支持（可选，用于替代 ChromaDB）==========
+# ========== PGVector 支持（向量数据库）==========
 langchain-core==1.2.6
 langchain-postgres==0.0.16
 langchain-huggingface==1.2.0

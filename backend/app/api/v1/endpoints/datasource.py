@@ -10,6 +10,7 @@ from app.schemas.datasource import (
     DataSource as DataSourceSchema,
     DataSourceCreate,
     DataSourceUpdate,
+    DataSourceTestConnection,
     TableInfo
 )
 from app.services.db_inspector import DBInspector
@@ -20,7 +21,7 @@ router = APIRouter()
 
 @router.post("/test", response_model=bool)
 def test_datasource_connection(
-    ds_in: DataSourceCreate,
+    ds_in: DataSourceTestConnection,
     current_user: User = Depends(get_current_user)
 ):
     """

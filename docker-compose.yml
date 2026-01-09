@@ -2,45 +2,21 @@ version: '3.8'
 
 services:
   # ========================================
-  # MySQL 数据库服务
-  # ========================================
-  mysql:
-    image: mysql:8.0
-    container_name: universal-bi-mysql
-    restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123456}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-universal_bi}
-      TZ: Asia/Shanghai
-    ports:
-      - "${MYSQL_PORT:-3306}:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./backend/migrations:/docker-entrypoint-initdb.d
-    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
-    networks:
-      - universal-bi-network
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123456}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ========================================
-  # PostgreSQL 向量数据库服务
+  # PostgreSQL 数据库服务（元数据 + 向量存储）
   # ========================================
   postgres:
-    image: postgres:15
+    image: pgvector/pgvector:pg15
     container_name: universal-bi-postgres
     restart: always
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres123456}
-      POSTGRES_DB: ${POSTGRES_DB:-universal_bi_vector}
+      POSTGRES_DB: ${POSTGRES_DB:-universal_bi}
       TZ: Asia/Shanghai
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations:/docker-entrypoint-initdb.d
     networks:
       - universal-bi-network
     healthcheck:
@@ -83,23 +59,21 @@ services:
     env_file:
       - .env
     environment:
-      - SQLALCHEMY_DATABASE_URI=mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-root123456}@mysql:3306/${MYSQL_DATABASE:-universal_bi}?charset=utf8mb4
+      - SQLALCHEMY_DATABASE_URI=postgresql://postgres:${POSTGRES_PASSWORD:-postgres123456}@postgres:5432/${POSTGRES_DB:-universal_bi}
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_DB=${POSTGRES_DB:-universal_bi}
+      - PG_USER=postgres
+      - PG_PASSWORD=${POSTGRES_PASSWORD:-postgres123456}
       - REDIS_URL=redis://${REDIS_PASSWORD:+:$REDIS_PASSWORD@}redis:6379/0
-      - VN_PG_HOST=postgres
-      - VN_PG_PORT=5432
-      - VN_PG_DB=${POSTGRES_DB:-universal_bi_vector}
-      - VN_PG_USER=postgres
-      - VN_PG_PASSWORD=${POSTGRES_PASSWORD:-postgres123456}
+      - VECTOR_STORE_TYPE=pgvector
     depends_on:
-      mysql:
-        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
       - ./backend:/app
-      - chroma_data:/app/chroma_db
     networks:
       - universal-bi-network
 
@@ -123,13 +97,9 @@ services:
 # 数据卷定义
 # ========================================
 volumes:
-  mysql_data:
-    driver: local
   postgres_data:
     driver: local
   redis_data:
-    driver: local
-  chroma_data:
     driver: local
 
 # ========================================

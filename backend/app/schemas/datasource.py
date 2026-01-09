@@ -9,6 +9,16 @@ class DataSourceBase(BaseModel):
     username: str
     database_name: str
 
+class DataSourceTestConnection(BaseModel):
+    """用于测试数据库连接的 Schema (name 可选)"""
+    name: Optional[str] = None  # 测试连接时 name 可以为空
+    type: str
+    host: str
+    port: int
+    username: str
+    password: str
+    database_name: str
+
 class DataSourceCreate(DataSourceBase):
     password: str
 

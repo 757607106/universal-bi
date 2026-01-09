@@ -1,7 +1,7 @@
-"""
+"""  
 Vanna 基础类
 
-包含 VannaLegacy 和 VannaLegacyPGVector 类，以及相关的辅助类。
+包含 VannaLegacyPGVector 类和相关辅助类，使用 PostgreSQL pgvector 扩展存储向量数据。
 """
 
 import uuid
@@ -10,18 +10,9 @@ from openai import OpenAI as OpenAIClient
 
 # Standard Vanna Imports for Mixin Pattern
 from vanna.legacy.openai import OpenAI_Chat
-from vanna.legacy.chromadb import ChromaDB_VectorStore
 from vanna.core.user import User, UserResolver, RequestContext
 
 from app.core.logger import get_logger
-
-# PGVector support (optional, loaded dynamically)
-try:
-    from vanna.legacy.pgvector import PG_VectorStore
-    PGVECTOR_AVAILABLE = True
-except ImportError:
-    PGVECTOR_AVAILABLE = False
-    PG_VectorStore = None
 
 logger = get_logger(__name__)
 
@@ -31,109 +22,6 @@ class TrainingStoppedException(Exception):
     """自定义异常：训练被用户中断"""
     pass
 
-
-class VannaLegacy(ChromaDB_VectorStore, OpenAI_Chat):
-    """
-    Legacy Vanna class for SQL generation
-    Combines ChromaDB vector store with OpenAI chat
-    使用传入的 chroma_client 避免重复创建导致的冲突
-    """
-    def __init__(self, config=None, chroma_client=None):
-        # 保存 config 引用，供父类方法使用
-        self.config = config or {}
-        
-        # 启用 LLM 数据可见性，支持 intermediate_sql 推理
-        self.allow_llm_to_see_data = True
-
-        # === VannaBase 需要的属性 ===
-        self.run_sql_is_set = False
-        self.static_documentation = ""
-        self.dialect = self.config.get("dialect", "SQL")
-        self.language = self.config.get("language", None)
-        self.max_tokens = self.config.get("max_tokens", 14000)
-
-        # === ChromaDB_VectorStore 需要的属性 ===
-        n_results = config.get('n_results', 10) if config else 10
-        self.n_results_sql = config.get('n_results_sql', n_results) if config else n_results
-        self.n_results_documentation = config.get('n_results_documentation', n_results) if config else n_results
-        self.n_results_ddl = config.get('n_results_ddl', n_results) if config else n_results
-
-        # 如果传入了 chroma_client，直接使用而不调用父类的 __init__
-        if chroma_client is not None:
-            import chromadb.utils.embedding_functions as embedding_functions
-
-            self.chroma_client = chroma_client
-            collection_name = config.get('collection_name', 'vanna_collection') if config else 'vanna_collection'
-            self.n_results = config.get('n_results', 10) if config else 10
-
-            # 初始化 embedding function
-            self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
-
-            # 创建 vanna 所需的所有 collection
-            self.ddl_collection = self.chroma_client.get_or_create_collection(
-                name=f"{collection_name}_ddl",
-                embedding_function=self.embedding_function,
-                metadata={"hnsw:space": "cosine"}
-            )
-            self.documentation_collection = self.chroma_client.get_or_create_collection(
-                name=f"{collection_name}_documentation",
-                embedding_function=self.embedding_function,
-                metadata={"hnsw:space": "cosine"}
-            )
-            self.sql_collection = self.chroma_client.get_or_create_collection(
-                name=f"{collection_name}_sql",
-                embedding_function=self.embedding_function,
-                metadata={"hnsw:space": "cosine"}
-            )
-        else:
-            # 回退到原始初始化方式
-            ChromaDB_VectorStore.__init__(self, config=config)
-
-        # Initialize with custom OpenAI client
-        if config and 'api_base' in config:
-            self.client = OpenAIClient(
-                api_key=config.get('api_key'),
-                base_url=config.get('api_base')
-            )
-            # Store model name
-            self.model = config.get('model', 'gpt-3.5-turbo')
-        else:
-            OpenAI_Chat.__init__(self, config=config)
-
-    def submit_prompt(self, prompt, **kwargs):
-        """
-        Override submit_prompt to use custom client
-        """
-        if hasattr(self, 'client'):
-            # Extract messages if provided in prompt
-            if isinstance(prompt, list):
-                messages = prompt
-            else:
-                messages = [
-                    {"role": "system", "content": "You are a helpful assistant that generates SQL queries."},
-                    {"role": "user", "content": str(prompt)}
-                ]
-
-            # Ensure all messages have valid content
-            validated_messages = []
-            for msg in messages:
-                if isinstance(msg.get('content'), str) and msg['content'].strip():
-                    validated_messages.append({
-                        "role": msg['role'],
-                        "content": msg['content']
-                    })
-
-            if not validated_messages:
-                raise ValueError("No valid messages to send to LLM")
-
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=validated_messages,
-                **kwargs
-            )
-            return response.choices[0].message.content
-        else:
-            return super().submit_prompt(prompt, **kwargs)
 
 
 class VannaLegacyPGVector(OpenAI_Chat):

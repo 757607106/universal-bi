@@ -44,8 +44,20 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
     
     # ========== 主数据库配置 ==========
-    # 支持MySQL/PostgreSQL/SQLite，默认使用MySQL
-    SQLALCHEMY_DATABASE_URI: str = "mysql+pymysql://root@localhost:3306/universal_bi?charset=utf8mb4"
+    # PostgreSQL 作为统一主数据库，存储元数据和向量数据
+    SQLALCHEMY_DATABASE_URI: str = "postgresql://postgres@localhost:5432/universal_bi"
+    
+    # PostgreSQL 连接配置（用于 Vanna 向量存储和业务数据）
+    PG_HOST: str = "localhost"
+    PG_PORT: int = 5432
+    PG_DB: str = "universal_bi"
+    PG_USER: str = "postgres"
+    PG_PASSWORD: str = "postgres123456"
+
+    @property
+    def PG_CONNECTION_STRING(self) -> str:
+        """生成 PostgreSQL 连接字符串（用于 Vanna 向量存储）"""
+        return f"postgresql://{self.PG_USER}:{self.PG_PASSWORD}@{self.PG_HOST}:{self.PG_PORT}/{self.PG_DB}"
     
     # ========== AI大模型配置 ==========
     # 阿里云通义千问API配置
@@ -58,23 +70,9 @@ class Settings(BaseSettings):
     SQL_CACHE_TTL: int = 604800  # SQL缓存过期时间（秒）- 7天
     
     # ========== 向量数据库配置 (PGVector) ==========
-    # 用于Vanna训练数据存储
-    VECTOR_STORE_TYPE: str = "chromadb"  # 可选: "pgvector", "chromadb"
-    VN_PG_HOST: str = "localhost"
-    VN_PG_PORT: int = 5432
-    VN_PG_DB: str = "universal_bi_vector"
-    VN_PG_USER: str = "postgres"
-    VN_PG_PASSWORD: str = "postgres"
-
-    @property
-    def VN_PG_CONNECTION_STRING(self) -> str:
-        """生成 PGVector 连接字符串"""
-        return f"postgresql://{self.VN_PG_USER}:{self.VN_PG_PASSWORD}@{self.VN_PG_HOST}:{self.VN_PG_PORT}/{self.VN_PG_DB}"
-    
-    # ========== ChromaDB配置 ==========
-    # 用于Vanna向量存储和检索
-    CHROMA_PERSIST_DIR: str = "./chroma_db"  # ChromaDB持久化目录
-    CHROMA_N_RESULTS: int = 10  # 向量检索返回结果数量
+    # 使用 PostgreSQL pgvector 扩展存储向量数据
+    VECTOR_STORE_TYPE: str = "pgvector"  # 固定值，不再支持 ChromaDB
+    VECTOR_N_RESULTS: int = 10  # 向量检索返回结果数量
 
     # ========== Vanna API模式配置 ==========
     # 控制使用 Legacy API 还是 Agent API
@@ -88,6 +86,7 @@ class Settings(BaseSettings):
         case_sensitive = True
         env_file = ".env"  # 统一从.env文件读取配置
         env_file_encoding = 'utf-8'
+        extra = "ignore"  # 忽略.env中未定义的额外字段
 
 settings = Settings()
 

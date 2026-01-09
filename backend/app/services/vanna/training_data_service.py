@@ -20,14 +20,14 @@ class VannaTrainingDataService:
     训练数据 CRUD 服务
 
     提供训练数据的查询、删除等操作。
-    支持 ChromaDB 和 PGVector 两种后端。
+    使用 PGVector 后端存储向量数据。
     """
 
     @classmethod
     def get_training_data(cls, dataset_id: int, page: int = 1, page_size: int = 20, type_filter: str = None) -> dict:
         """
         获取训练数据（QA对、DDL、文档等）
-        自动根据配置选择 ChromaDB 或 PGVector 后端
+        使用 PGVector 后端
 
         Args:
             dataset_id: 数据集ID
@@ -43,12 +43,7 @@ class VannaTrainingDataService:
                 'page_size': int
             }
         """
-        vector_store_type = settings.VECTOR_STORE_TYPE.lower()
-
-        if vector_store_type == "pgvector":
-            return cls._get_training_data_pgvector(dataset_id, page, page_size, type_filter)
-        else:
-            return cls._get_training_data_chromadb(dataset_id, page, page_size, type_filter)
+        return cls._get_training_data_pgvector(dataset_id, page, page_size, type_filter)
 
     @classmethod
     def _get_training_data_pgvector(cls, dataset_id: int, page: int = 1, page_size: int = 20, type_filter: str = None) -> dict:
@@ -289,12 +284,12 @@ class VannaTrainingDataService:
     def remove_training_data(cls, dataset_id: int, training_data_id: str) -> bool:
         """
         删除单条训练数据
-        支持 ChromaDB 和 PGVector 两种后端
-
+        使用 PGVector 后端
+    
         Args:
             dataset_id: 数据集ID
-            training_data_id: 训练数据ID
-
+            training_data_id: 训练数据 ID
+    
         Returns:
             bool: 是否成功删除
         """

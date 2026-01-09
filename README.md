@@ -31,9 +31,11 @@ Universal BI 是一个基于 AI 的智能数据分析平台，用户只需用自
 
 - **Web 框架**：FastAPI（Python 3.8+）
 - **AI 引擎**：Vanna AI（Legacy API + Qwen-Max）
-- **向量数据库**：ChromaDB
+- **向量数据库**：PostgreSQL + pgvector
 - **ORM**：SQLAlchemy
-- **数据库支持**：MySQL、PostgreSQL
+- **数据库支持**：PostgreSQL（主数据库 + 向量存储）
+- **缓存**：Redis
+- **分析引擎**：DuckDB（用于多表分析）
 
 ### 前端技术栈
 
@@ -50,7 +52,7 @@ Universal BI 是一个基于 AI 的智能数据分析平台，用户只需用自
 
 - Python 3.8+
 - Node.js 16+
-- MySQL 5.7+ 或 PostgreSQL 12+
+- PostgreSQL 12+ (with pgvector extension)
 - Redis 5.0+（用于缓存）
 - Docker & Docker Compose（可选，推荐）
 
@@ -182,14 +184,14 @@ DASHSCOPE_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxx
 #### 数据库配置（可选）
 
 ```env
-# MySQL（推荐生产环境）
-SQLALCHEMY_DATABASE_URI=mysql+pymysql://root:password@localhost:3306/universal_bi?charset=utf8mb4
-
-# PostgreSQL
+# PostgreSQL（统一主数据库，同时支持向量存储）
 SQLALCHEMY_DATABASE_URI=postgresql://postgres:password@localhost:5432/universal_bi
-
-# SQLite（默认，适合开发测试）
-SQLALCHEMY_DATABASE_URI=sqlite:///./sql_app.db
+PG_HOST=localhost
+PG_PORT=5432
+PG_DB=universal_bi
+PG_USER=postgres
+PG_PASSWORD=password
+VECTOR_STORE_TYPE=pgvector
 ```
 
 #### Redis 配置（可选）

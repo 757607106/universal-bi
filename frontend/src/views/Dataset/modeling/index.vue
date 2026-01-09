@@ -1225,7 +1225,6 @@ const generateSQL = () => {
     target_col: e.data?.target_col,
     label: e.label
   })))
-  fetch('http://127.0.0.1:7242/ingest/395ece91-8870-4a19-88ea-95fec7142662',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'modeling/index.vue:generateSQL',message:'SQL generation started',data:{edges_count:edges.value.length,edges_data:edges.value.map(e=>({source_col:e.data?.source_col,target_col:e.data?.target_col}))},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H6'})}).catch(()=>{});
   // #endregion
 
   // 为每个表创建别名映射
@@ -1432,7 +1431,6 @@ const handleCreateView = async () => {
       view_name: `v_${wideTableName.value}`,
       sql: sql
     }
-    fetch('http://127.0.0.1:7242/ingest/395ece91-8870-4a19-88ea-95fec7142662',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'modeling/index.vue:1415',message:'calling createView API',data:requestPayload,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1,H4'})}).catch(()=>{});
     // #endregion
     
     await createView({

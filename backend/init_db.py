@@ -25,7 +25,23 @@ def init_database():
     print("=" * 50)
     
     try:
-        # 创建所有表
+        # 0. 启用 pgvector 扩展（PostgreSQL）
+        print("\n0. 启用 pgvector 扩展...")
+        with Session(engine) as session:
+            try:
+                session.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                session.commit()
+                print("✓ pgvector 扩展启用成功")
+            except Exception as e:
+                # 如果不是 PostgreSQL 或者扩展已存在，忽略错误
+                if "already exists" in str(e).lower():
+                    print("✓ pgvector 扩展已存在")
+                elif "does not exist" in str(e).lower():
+                    print("⚠️  pgvector 扩展未安装，跳过（向量功能可能不可用）")
+                else:
+                    print(f"⚠️  启用 pgvector 失败: {e}")
+        
+        # 1. 创建所有表
         print("\n1. 创建数据库表结构...")
         Base.metadata.create_all(bind=engine)
         print("✓ 表结构创建成功")

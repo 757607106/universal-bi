@@ -5,11 +5,13 @@ Vanna 服务模块
 """
 
 from app.services.vanna.base import (
-    VannaLegacy,
     VannaLegacyPGVector,
     SimpleUserResolver,
     TrainingStoppedException,
 )
+
+# Backward compatibility alias
+VannaLegacy = VannaLegacyPGVector
 from app.services.vanna.instance_manager import VannaInstanceManager
 from app.services.vanna.cache_service import VannaCacheService
 from app.services.vanna.training_service import VannaTrainingService
@@ -24,7 +26,7 @@ __all__ = [
     "VannaManager",
     "VannaAgentManager",
     # 基础类
-    "VannaLegacy",
+    "VannaLegacy",  # Alias for VannaLegacyPGVector (backward compatibility)
     "VannaLegacyPGVector",
     "SimpleUserResolver",
     "TrainingStoppedException",
