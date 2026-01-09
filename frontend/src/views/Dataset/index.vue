@@ -7,10 +7,7 @@
           <p class="text-gray-500 dark:text-slate-400">构建和管理用于 AI 分析的业务数据集</p>
         </div>
         <div class="flex gap-3">
-          <el-button @click="uploadDialogVisible = true" class="bg-green-600 shadow-lg shadow-green-500/30 hover:bg-green-500 border-none text-white">
-            <el-icon class="mr-2"><Upload /></el-icon>
-            上传Excel/CSV
-          </el-button>
+
           <el-button @click="handleGoMultiUpload" class="bg-purple-600 shadow-lg shadow-purple-500/30 hover:bg-purple-500 border-none text-white">
             <el-icon class="mr-2"><FolderAdd /></el-icon>
             批量上传多表
@@ -153,10 +150,7 @@
         @refresh="fetchDatasets"
       />
 
-      <FileUploadDialog
-        v-model="uploadDialogVisible"
-        @refresh="fetchDatasets"
-      />
+
 
       <ComputedMetricManager
         v-model="metricManagerVisible"
@@ -170,19 +164,19 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Plus, Upload, Files, Loading, MagicStick, View, CircleCheck, CircleClose, VideoPause, Clock, Delete, Collection, TrendCharts, More, Refresh, ChatDotRound, FolderAdd } from '@element-plus/icons-vue'
+import { Plus, Files, Loading, MagicStick, View, CircleCheck, CircleClose, VideoPause, Clock, Delete, Collection, TrendCharts, More, Refresh, ChatDotRound, FolderAdd } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getDatasetList, trainDataset, deleteDataset, type Dataset } from '@/api/dataset'
 import DatasetWizard from './components/DatasetWizard.vue'
 import TrainingProgressDialog from './components/TrainingProgressDialog.vue'
 import TrainingDataDialog from './components/TrainingDataDialog.vue'
 import BusinessTermManager from './components/BusinessTermManager.vue'
-import FileUploadDialog from './components/FileUploadDialog.vue'
+
 import ComputedMetricManager from './components/ComputedMetricManager.vue'
 
 const router = useRouter()
 const wizardVisible = ref(false)
-const uploadDialogVisible = ref(false)
+
 const progressDialogVisible = ref(false)
 const trainingDataDialogVisible = ref(false)
 const businessTermManagerVisible = ref(false)

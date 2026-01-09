@@ -3,18 +3,14 @@ RelationshipAnalyzer - LLM 增强的表关系分析器
 综合利用规则引擎、数据采样和 LLM 推理来识别表之间的关联关系
 """
 import json
-import re
-import duckdb
-import pandas as pd
 from typing import List, Dict, Any, Tuple, Optional
-from sqlalchemy.orm import Session
-from openai import OpenAI as OpenAIClient
+from sqlalchemy import inspect, select, func, text, MetaData, Table
+from sqlalchemy.engine import Engine
 
-from app.core.config import settings
 from app.core.logger import get_logger
 from app.services.duckdb_service import DuckDBService
-from app.services.db_inspector import DBInspector
-from app.models.metadata import Dataset, DataSource
+from app.core.config import settings
+from openai import OpenAI as OpenAIClient
 
 logger = get_logger(__name__)
 
@@ -32,32 +28,24 @@ class RelationshipAnalyzer:
     def analyze_relationships(
         cls,
         dataset_id: int,
-        db_path: str,
-        table_names: List[str]
+        table_names: List[str],
+        db_path: Optional[str] = None,
+        engine: Optional[Engine] = None
     ) -> List[Dict[str, Any]]:
         """分析表之间的关系
         
         Args:
             dataset_id: 数据集 ID
-            db_path: DuckDB 数据库路径
             table_names: 表名列表
+            db_path: DuckDB 数据库路径 (可选)
+            engine: SQLAlchemy Engine (可选)
             
         Returns:
             List[Dict]: 推荐的关系列表
-            [
-                {
-                    "source": "orders",
-                    "target": "customers",
-                    "source_col": "customer_id",
-                    "target_col": "id",
-                    "type": "left",
-                    "confidence": "high",
-                    "reasoning": "命名约定匹配 + 数据类型一致",
-                    "data_overlap": 98.5
-                },
-                ...
-            ]
         """
+        if not db_path and not engine:
+            raise ValueError("Must provide either db_path or engine")
+
         logger.info(
             f"Starting relationship analysis for dataset {dataset_id}",
             table_count=len(table_names)
@@ -69,7 +57,7 @@ class RelationshipAnalyzer:
         
         try:
             # Step 1: 提取表 Schema 和采样数据
-            schemas = cls._extract_schemas(db_path, table_names)
+            schemas = cls._extract_schemas(table_names, db_path, engine)
             
             # Step 2: 规则初筛（快速剔除明显不相关的）
             candidates = cls._rule_based_filtering(schemas)
@@ -90,11 +78,12 @@ class RelationshipAnalyzer:
                 if rel.get('confidence') in ['high', 'medium']:
                     try:
                         overlap = cls._calculate_data_overlap(
-                            db_path,
                             rel['source'],
                             rel['source_col'],
                             rel['target'],
-                            rel['target_col']
+                            rel['target_col'],
+                            db_path,
+                            engine
                         )
                         rel['data_overlap'] = overlap
                         
@@ -122,23 +111,24 @@ class RelationshipAnalyzer:
     @classmethod
     def _extract_schemas(
         cls,
+        table_names: List[str],
+        db_path: Optional[str] = None,
+        engine: Optional[Engine] = None
+    ) -> List[Dict[str, Any]]:
+        """提取表的 Schema 和采样数据"""
+        if db_path:
+            return cls._extract_schemas_from_duckdb(db_path, table_names)
+        elif engine:
+            return cls._extract_schemas_from_engine(engine, table_names)
+        else:
+            raise ValueError("No database connection provided")
+
+    @classmethod
+    def _extract_schemas_from_duckdb(
+        cls,
         db_path: str,
         table_names: List[str]
     ) -> List[Dict[str, Any]]:
-        """提取表的 Schema 和采样数据
-        
-        Returns:
-            List[Dict]: 每个表的元数据
-            [
-                {
-                    "table_name": "orders",
-                    "columns": [{"name": "id", "type": "INTEGER", ...}],
-                    "sample_data": [{row1}, {row2}, ...],
-                    "statistics": {"row_count": 1000, ...}
-                },
-                ...
-            ]
-        """
         schemas = []
         
         for table in table_names:
@@ -175,6 +165,75 @@ class RelationshipAnalyzer:
             
             except Exception as e:
                 logger.error(f"Failed to extract schema for {table}: {e}")
+                raise
+        
+        return schemas
+
+    @classmethod
+    def _extract_schemas_from_engine(
+        cls,
+        engine: Engine,
+        table_names: List[str]
+    ) -> List[Dict[str, Any]]:
+        schemas = []
+        inspector = inspect(engine)
+        
+        for table_name in table_names:
+            try:
+                # Get Columns
+                columns = inspector.get_columns(table_name)
+                # Normalize column info to match DuckDB format
+                schema = []
+                for col in columns:
+                    schema.append({
+                        "name": col['name'],
+                        "type": str(col['type']),
+                        "nullable": col.get('nullable', True)
+                    })
+
+                # Get Sample Data
+                # Use pandas for easier type handling
+                query = text(f"SELECT * FROM {engine.dialect.identifier_preparer.quote(table_name)}")
+                # Note: LIMIT syntax varies by dialect, but pandas head() handles it after fetching or we can append limit
+                # Ideally we should use select().limit()
+                
+                try:
+                    metadata = MetaData()
+                    table_obj = Table(table_name, metadata, autoload_with=engine)
+                    stmt = select(table_obj).limit(100)
+                    sample_df = pd.read_sql(stmt, engine)
+                except Exception:
+                    # Fallback to raw SQL if reflection fails
+                    sample_df = pd.read_sql(query, engine).head(100)
+
+                # Get Statistics (Row Count)
+                try:
+                    count_query = text(f"SELECT COUNT(*) FROM {engine.dialect.identifier_preparer.quote(table_name)}")
+                    with engine.connect() as conn:
+                        row_count = conn.execute(count_query).scalar()
+                except Exception:
+                    row_count = len(sample_df) # Fallback
+
+                stats = {"row_count": row_count}
+
+                # Serialize sample data
+                sample_data_dict = sample_df.head(5).to_dict('records')
+                for row in sample_data_dict:
+                    for key, value in row.items():
+                        if isinstance(value, (pd.Timestamp, pd.Timedelta)):
+                            row[key] = str(value)
+                        elif pd.isna(value):
+                            row[key] = None
+
+                schemas.append({
+                    "table_name": table_name,
+                    "columns": schema,
+                    "sample_data": sample_data_dict,
+                    "statistics": stats
+                })
+
+            except Exception as e:
+                logger.error(f"Failed to extract schema for {table_name} from engine: {e}")
                 raise
         
         return schemas
@@ -482,17 +541,34 @@ class RelationshipAnalyzer:
     @classmethod
     def _calculate_data_overlap(
         cls,
-        db_path: str,
         table_a: str,
         col_a: str,
         table_b: str,
-        col_b: str
+        col_b: str,
+        db_path: Optional[str] = None,
+        engine: Optional[Engine] = None
     ) -> float:
         """计算两列数据的重合度（Jaccard 相似度）
         
         Returns:
             float: 重合度百分比 (0-100)
         """
+        if db_path:
+            return cls._calculate_data_overlap_duckdb(db_path, table_a, col_a, table_b, col_b)
+        elif engine:
+            return cls._calculate_data_overlap_engine(engine, table_a, col_a, table_b, col_b)
+        else:
+            raise ValueError("No database connection provided")
+
+    @classmethod
+    def _calculate_data_overlap_duckdb(
+        cls,
+        db_path: str,
+        table_a: str,
+        col_a: str,
+        table_b: str,
+        col_b: str
+    ) -> float:
         try:
             sql = f"""
             WITH a_values AS (
@@ -526,11 +602,76 @@ class RelationshipAnalyzer:
             overlap = float(result_df.iloc[0, 0])
             
             logger.debug(
-                f"Data overlap: {table_a}.{col_a} <-> {table_b}.{col_b} = {overlap:.1f}%"
+                f"Data overlap (DuckDB): {table_a}.{col_a} <-> {table_b}.{col_b} = {overlap:.1f}%"
             )
             
             return round(overlap, 2)
         
         except Exception as e:
-            logger.error(f"Failed to calculate data overlap: {e}", exc_info=True)
+            logger.error(f"Failed to calculate data overlap in DuckDB: {e}", exc_info=True)
+            raise
+
+    @classmethod
+    def _calculate_data_overlap_engine(
+        cls,
+        engine: Engine,
+        table_a: str,
+        col_a: str,
+        table_b: str,
+        col_b: str
+    ) -> float:
+        try:
+            # Quote identifiers for safety
+            q_table_a = engine.dialect.identifier_preparer.quote(table_a)
+            q_col_a = engine.dialect.identifier_preparer.quote(col_a)
+            q_table_b = engine.dialect.identifier_preparer.quote(table_b)
+            q_col_b = engine.dialect.identifier_preparer.quote(col_b)
+
+            # Use standard SQL CTEs which are supported by most modern DBs (MySQL 8.0+, PG, etc.)
+            # Note: Older MySQL versions (<8.0) do not support CTEs. 
+            # If we need to support them, we'd need nested subqueries.
+            # Assuming modern environment here.
+            
+            sql = text(f"""
+            WITH a_values AS (
+                SELECT DISTINCT {q_col_a} AS val FROM {q_table_a} WHERE {q_col_a} IS NOT NULL
+            ),
+            b_values AS (
+                SELECT DISTINCT {q_col_b} AS val FROM {q_table_b} WHERE {q_col_b} IS NOT NULL
+            ),
+            intersection AS (
+                SELECT COUNT(*) as cnt 
+                FROM a_values 
+                INNER JOIN b_values ON a_values.val = b_values.val
+            ),
+            union_count AS (
+                SELECT COUNT(*) as cnt 
+                FROM (
+                    SELECT val FROM a_values 
+                    UNION 
+                    SELECT val FROM b_values
+                ) as u
+            )
+            SELECT 
+                CASE 
+                    WHEN union_count.cnt = 0 THEN 0
+                    ELSE (intersection.cnt * 100.0 / union_count.cnt)
+                END AS overlap_percent
+            FROM intersection, union_count
+            """)
+            
+            with engine.connect() as conn:
+                result = conn.execute(sql).scalar()
+                overlap = float(result) if result is not None else 0.0
+            
+            logger.debug(
+                f"Data overlap (SQLAlchemy): {table_a}.{col_a} <-> {table_b}.{col_b} = {overlap:.1f}%"
+            )
+            
+            return round(overlap, 2)
+        
+        except Exception as e:
+            logger.error(f"Failed to calculate data overlap with Engine: {e}", exc_info=True)
+            # Return 0 or None? Original logic returns None on error in loop, 
+            # but here we raise so the loop can catch it and set to None.
             raise

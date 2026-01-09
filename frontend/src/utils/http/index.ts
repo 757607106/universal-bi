@@ -35,7 +35,9 @@ class PureHttp {
     PureHttp.axiosInstance.interceptors.request.use(
       async (config: any) => {
         // 开启进度条
-        NProgress.start();
+        if (!config.url?.includes('/chat')) {
+          NProgress.start();
+        }
         // 可以在这里添加token
         const token = getToken();
         if (token) {

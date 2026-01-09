@@ -84,13 +84,13 @@ class VannaTrainingService:
     async def train_dataset_async(cls, dataset_id: int, table_names: list[str], db_session: Session):
         """
         异步训练数据集，支持进度更新和中断控制
-
+        
         流程：
         - Step 0-10%: 初始化、检查数据库连接、提取 DDL
         - Step 10-40%: 训练 DDL 到 Vanna
         - Step 40-80%: 训练文档/业务术语
         - Step 80-100%: 生成示例 SQLQA 对并训练
-
+        
         Args:
             dataset_id: 数据集ID
             table_names: 要训练的表名列表
@@ -175,7 +175,15 @@ class VannaTrainingService:
 
             # 使用 Legacy API 进行训练
             vn = VannaInstanceManager.get_legacy_vanna(dataset_id)
-
+            
+            # 【重要】清理旧的训练数据，防止重复叠加
+            # 注意：由于现在使用了基于内容的哈希 ID，重复训练相同内容不再是问题，
+            # 但如果表结构发生了变化，旧的 DDL 仍然会保留。
+            # 理想情况下，我们应该清理与该数据集相关的所有旧数据。
+            # 但目前 PGVector 实现不支持按 metadata 批量删除（需要遍历）。
+            # 鉴于我们已实现了幂等 ID，这里暂时依赖 ID 去重机制。
+            # 如果需要彻底重置，建议在 VannaLegacyPGVector 中实现 reset_collection()
+            
             # === Step 3: 训练 DDL (10-40%) ===
             for i, (table_name, ddl) in enumerate(ddls):
                 if ddl:

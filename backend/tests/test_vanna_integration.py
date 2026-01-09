@@ -425,7 +425,7 @@ def run_all_integration_tests():
     # 显示配置信息
     from app.core.config import settings
     print_info(f"向量存储类型: {settings.VECTOR_STORE_TYPE}")
-    print_info(f"PGVector 连接: {settings.VN_PG_HOST}:{settings.VN_PG_PORT}/{settings.VN_PG_DB}")
+    print_info(f"PGVector 连接: {settings.PG_HOST}:{settings.PG_PORT}/{settings.PG_DB}")
     print_info(f"LLM 模型: {settings.QWEN_MODEL}")
 
     tests = [

@@ -74,23 +74,31 @@ class VannaContextEnhancer(LlmContextEnhancer):
         try:
             enhanced_prompt = system_prompt
 
+            # 使用更丰富的搜索查询（可以考虑结合历史，但目前仅使用当前消息）
+            # 注意：在多轮对话中，如果用户说 "按时间排序"，单独搜索可能效果不佳
+            # Vanna 2.0 Agent 可能会在 messages 中传递历史，但 enhance_system_prompt 
+            # 接口目前主要接收 current user_message。
+            # TODO: 如果能获取 conversation history，可以构建更好的 search query
+            
+            search_query = user_message
+
             # 1. 获取相关的 DDL
-            ddl_section = await self._get_ddl_section(user_message)
+            ddl_section = await self._get_ddl_section(search_query)
             if ddl_section:
                 enhanced_prompt += ddl_section
 
             # 2. 获取相关文档
-            doc_section = await self._get_documentation_section(user_message)
+            doc_section = await self._get_documentation_section(search_query)
             if doc_section:
                 enhanced_prompt += doc_section
 
             # 3. 获取类似问答示例
-            qa_section = await self._get_qa_section(user_message)
+            qa_section = await self._get_qa_section(search_query)
             if qa_section:
                 enhanced_prompt += qa_section
 
             # 4. 从 Agent Memory 获取额外上下文（如果有）
-            memory_section = await self._get_memory_section(user_message, user)
+            memory_section = await self._get_memory_section(search_query, user)
             if memory_section:
                 enhanced_prompt += memory_section
 
@@ -212,20 +220,16 @@ class VannaContextEnhancer(LlmContextEnhancer):
     ) -> List["LlmMessage"]:
         """
         增强用户消息
-
-        默认实现不修改消息，子类可以覆盖此方法来：
-        - 添加用户偏好信息
-        - 注入用户特定的上下文
-        - 修改消息格式
-
-        Args:
-            messages: 原始消息列表
-            user: 当前用户
-
-        Returns:
-            增强后的消息列表
+        
+        在此处，我们可以分析对话历史，提取关键实体或上下文，
+        并将其隐式地添加到系统提示或当前消息中（虽然这个方法只返回 messages）。
+        
+        对于多轮对话，如果 messages 包含之前的问答，Vanna 默认会将它们传给 LLM。
         """
-        # 默认不修改
+        # 简单实现：确保消息不为空
+        if not messages:
+            return messages
+            
         return messages
 
 

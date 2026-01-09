@@ -196,11 +196,14 @@ const handleSaveAndModeling = async () => {
     // 1. 更新表配置
     await updateDatasetTables(createdDatasetId.value, selectedTables.value)
     
-    ElMessage.success('数据集创建成功，即将进入可视化建模')
+    // 不再自动触发训练
+    // await trainDataset(createdDatasetId.value) 
+    
+    ElMessage.success('数据集已保存，请配置表关联关系')
     emit('refresh')
     handleClose()
     
-    // 2. 跳转到可视化建模页面
+    // 2. 跳转到可视化建模页面进行关联配置
     router.push(`/datasets/modeling/${createdDatasetId.value}`)
   } catch (error) {
     ElMessage.error('操作失败')

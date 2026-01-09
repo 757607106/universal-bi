@@ -60,6 +60,9 @@ class VannaTrainingDataService:
             all_items = []
 
             if df is not None and not df.empty:
+                # Fill NaN values with empty string to avoid validation errors
+                df = df.fillna('')
+
                 for _, row in df.iterrows():
                     doc_id = row.get('id', '')
                     content = row.get('content', '')

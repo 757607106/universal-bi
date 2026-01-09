@@ -599,19 +599,60 @@ def analyze_relationships(
         
         try:
             logger.info(
-                f"Using VannaAnalystService for traditional datasource, "
+                f"Using RelationshipAnalyzer for traditional datasource, "
                 f"dataset_id: {dataset.id}, datasource_id: {request.datasource_id}"
             )
             
-            result = VannaAnalystService.analyze_relationships(
+            from app.services.db_inspector import DBInspector
+            engine = DBInspector.get_engine(datasource)
+            
+            # 使用 RelationshipAnalyzer 分析（复用相同的智能分析逻辑）
+            relationships = RelationshipAnalyzer.analyze_relationships(
                 dataset_id=dataset.id,
                 table_names=request.table_names,
-                db_session=db
+                engine=engine
             )
-            return result
+            
+            # 转换为 API 响应格式 (edges)
+            edges = [
+                EdgeResponse(
+                    source=rel['source'],
+                    target=rel['target'],
+                    source_col=rel['source_col'],
+                    target_col=rel['target_col'],
+                    type=rel.get('type', 'left'),
+                    confidence=f"{rel.get('confidence', 'medium')} ({rel.get('data_overlap', 0):.1f}% overlap)"
+                )
+                for rel in relationships
+            ]
+            
+            # 获取节点信息（表结构）
+            from sqlalchemy import inspect as sa_inspect
+            inspector = sa_inspect(engine)
+            nodes = []
+            
+            for table_name in request.table_names:
+                try:
+                    columns = inspector.get_columns(table_name)
+                    fields = [
+                        FieldResponse(
+                            name=col['name'],
+                            type=str(col['type']),
+                            nullable=col.get('nullable', True)
+                        )
+                        for col in columns
+                    ]
+                    nodes.append(NodeResponse(table_name=table_name, fields=fields))
+                except Exception as e:
+                    logger.warning(f"Failed to get columns for {table_name}: {e}")
+                    nodes.append(NodeResponse(table_name=table_name, fields=[]))
+
+            return AnalyzeRelationshipsResponse(edges=edges, nodes=nodes)
+            
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
+            logger.error(f"Analysis failed: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
     
     # 没有找到任何可用的数据集

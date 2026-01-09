@@ -130,18 +130,26 @@ class VannaLegacyPGVector(OpenAI_Chat):
             return super().submit_prompt(prompt, **kwargs)
 
     # === PGVector Storage Methods ===
+    def _generate_id(self, content: str) -> str:
+        """Generate a deterministic ID based on content hash"""
+        import hashlib
+        return hashlib.md5(content.encode('utf-8')).hexdigest()
+
     def add_ddl(self, ddl: str, **kwargs) -> str:
         """Add DDL to PGVector"""
         from langchain_core.documents import Document
-        doc_id = str(uuid.uuid4())
+        # Use content hash for deterministic ID to prevent duplicates
+        doc_id = self._generate_id(ddl)
         doc = Document(page_content=ddl, metadata={"id": doc_id})
+        # PGVector's add_documents will update if ID exists (upsert behavior usually depends on impl, 
+        # but deterministic ID prevents infinite growth)
         self.ddl_collection.add_documents([doc], ids=[doc_id])
         return doc_id
 
     def add_documentation(self, documentation: str, **kwargs) -> str:
         """Add documentation to PGVector"""
         from langchain_core.documents import Document
-        doc_id = str(uuid.uuid4())
+        doc_id = self._generate_id(documentation)
         doc = Document(page_content=documentation, metadata={"id": doc_id})
         self.documentation_collection.add_documents([doc], ids=[doc_id])
         return doc_id
@@ -149,8 +157,8 @@ class VannaLegacyPGVector(OpenAI_Chat):
     def add_question_sql(self, question: str, sql: str, **kwargs) -> str:
         """Add question-SQL pair to PGVector"""
         from langchain_core.documents import Document
-        doc_id = str(uuid.uuid4())
         content = f"Question: {question}\nSQL: {sql}"
+        doc_id = self._generate_id(content)
         doc = Document(page_content=content, metadata={"id": doc_id, "question": question, "sql": sql})
         self.sql_collection.add_documents([doc], ids=[doc_id])
         return doc_id
